@@ -1,0 +1,1628 @@
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import type { ConversationMember, Message } from '@prisma/client';
+import { NotificationsService } from '../notifications/notifications.service';
+import { PresenceService } from '../presence/presence.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
+import { StorageService } from '../uploads/storage.service';
+import { EventsGateway } from '../websocket/events.gateway';
+import { MessagesService, toMessageDto } from './messages.service';
+
+function buildMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: 'msg-1',
+    conversationId: 'conv-1',
+    senderId: 'user-1',
+    type: 'TEXT',
+    text: 'Bonjour',
+    systemAction: null,
+    systemTargetUserId: null,
+    mentionsEveryone: false,
+    replyToId: null,
+    editedAt: null,
+    deletedAt: null,
+    clientId: null,
+    pinnedAt: null,
+    pinnedById: null,
+    sentAt: new Date(),
+    deliveredAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+// Signature réelle minimale par type MIME — depuis l'audit de sécurité,
+// MessagesService vérifie les octets du fichier en plus du Content-Type
+// déclaré (voir file-signature.util.ts), un buffer de remplissage seul ne
+// suffit donc plus à passer la validation.
+const FILE_SIGNATURES: Readonly<Record<string, number[]>> = {
+  'image/jpeg': [0xff, 0xd8, 0xff],
+  'video/mp4': [0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70], // "....ftyp"
+};
+
+function buildImageFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
+  const mimetype = overrides.mimetype ?? 'image/jpeg';
+  const signature = FILE_SIGNATURES[mimetype] ?? [];
+  return {
+    fieldname: 'image',
+    originalname: 'photo.jpg',
+    encoding: '7bit',
+    mimetype: 'image/jpeg',
+    size: 2000,
+    buffer: Buffer.concat([Buffer.from(signature), Buffer.alloc(2000 - signature.length, 1)]),
+    destination: '',
+    filename: '',
+    path: '',
+    stream: undefined as never,
+    ...overrides,
+  };
+}
+
+function buildMembership(overrides: Partial<ConversationMember> = {}): ConversationMember {
+  return {
+    id: 'member-1',
+    conversationId: 'conv-1',
+    userId: 'user-1',
+    role: 'MEMBER',
+    joinedAt: new Date(),
+    lastReadAt: null,
+    isArchived: false,
+    isMuted: false,
+    isPinned: false,
+    pinnedAt: null,
+    hiddenAt: null,
+    leftAt: null,
+    ...overrides,
+  };
+}
+
+describe('MessagesService', () => {
+  let prisma: {
+    message: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+    };
+    conversation: { update: jest.Mock; findUnique: jest.Mock };
+    conversationMember: { findUnique: jest.Mock; findMany: jest.Mock; update: jest.Mock };
+    messageRead: { createMany: jest.Mock };
+    messageDeletion: { upsert: jest.Mock };
+    attachment: { findUnique: jest.Mock; findMany: jest.Mock };
+    reaction: { upsert: jest.Mock; deleteMany: jest.Mock };
+    messageMention: { createMany: jest.Mock };
+    locationMessage: { update: jest.Mock };
+    $transaction: jest.Mock;
+  };
+  let events: { emitToUsers: jest.Mock };
+  let presence: { isAnyOnline: jest.Mock };
+  let notifications: { create: jest.Mock };
+  let storage: {
+    save: jest.Mock;
+    exists: jest.Mock;
+    createReadStream: jest.Mock;
+    delete: jest.Mock;
+  };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    upload: jest.Mock;
+    getSignedUrl: jest.Mock;
+    delete: jest.Mock;
+  };
+  let service: MessagesService;
+
+  beforeEach(() => {
+    prisma = {
+      message: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      // "DIRECT" par défaut : chaque test existant continue de ne jamais
+      // déclencher processMentions (jamais pour une conversation DIRECT) —
+      // les tests dédiés aux mentions basculent explicitement sur "GROUP".
+      conversation: {
+        update: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({ type: 'DIRECT' }),
+      },
+      conversationMember: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+      messageRead: { createMany: jest.fn() },
+      messageDeletion: { upsert: jest.fn() },
+      attachment: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+      reaction: { upsert: jest.fn(), deleteMany: jest.fn() },
+      messageMention: { createMany: jest.fn() },
+      locationMessage: { update: jest.fn() },
+      $transaction: jest.fn(),
+    };
+    events = { emitToUsers: jest.fn() };
+    presence = { isAnyOnline: jest.fn().mockResolvedValue(false) };
+    notifications = { create: jest.fn().mockResolvedValue(null) };
+    storage = {
+      save: jest.fn().mockResolvedValue({ key: 'attachment/generated.jpg', sizeBytes: 123 }),
+      exists: jest.fn().mockResolvedValue(true),
+      createReadStream: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
+    // Non configuré par défaut : chaque test existant continue de passer
+    // par StorageService (LOCAL) exactement comme avant Cloudinary — les
+    // tests dédiés à la branche CLOUDINARY basculent isConfigured() à true
+    // explicitement (voir describe('Cloudinary', ...) plus bas).
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      upload: jest.fn(),
+      getSignedUrl: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
+    service = new MessagesService(
+      prisma as unknown as PrismaService,
+      events as unknown as EventsGateway,
+      presence as unknown as PresenceService,
+      notifications as unknown as NotificationsService,
+      storage as unknown as StorageService,
+      cloudinary as unknown as CloudinaryProvider,
+    );
+  });
+
+  describe('send', () => {
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.send('user-1', { conversationId: 'conv-1', text: 'salut' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuse une réponse à un message situé dans une autre conversation', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessage({ id: 'msg-autre', conversationId: 'conv-2' }),
+      );
+
+      await expect(
+        service.send('user-1', { conversationId: 'conv-1', text: 'salut', replyToId: 'msg-autre' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('marque le message livré immédiatement si le destinataire est en ligne', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      presence.isAnyOnline.mockResolvedValue(true);
+      const created = buildMessage({ deliveredAt: new Date() });
+      prisma.$transaction.mockResolvedValue([{ ...created, reads: [] }, {}]);
+
+      const result = await service.send('user-1', { conversationId: 'conv-1', text: 'salut' });
+
+      expect(result.deliveredAt).not.toBeNull();
+    });
+
+    it("laisse deliveredAt à null si aucun destinataire n'est en ligne", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      presence.isAnyOnline.mockResolvedValue(false);
+      prisma.$transaction.mockResolvedValue([{ ...buildMessage(), reads: [] }, {}]);
+
+      const result = await service.send('user-1', { conversationId: 'conv-1', text: 'salut' });
+
+      expect(result.deliveredAt).toBeNull();
+    });
+
+    it('renvoie le message déjà créé plutôt qu’un doublon quand clientId correspond déjà à un envoi du même expéditeur', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue({
+        ...buildMessage({ id: 'msg-existant', clientId: 'client-abc', senderId: 'user-1' }),
+        reads: [],
+      });
+
+      const result = await service.send('user-1', {
+        conversationId: 'conv-1',
+        text: 'salut',
+        clientId: 'client-abc',
+      });
+
+      expect(result.id).toBe('msg-existant');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('crée le message, fait remonter la conversation et notifie les autres membres', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = { ...buildMessage({ text: 'salut' }), reads: [] };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.send('user-1', { conversationId: 'conv-1', text: 'salut' });
+
+      expect(result.text).toBe('salut');
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:new',
+        expect.objectContaining({ id: created.id }),
+      );
+    });
+  });
+
+  describe('sendLocation', () => {
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuse une réponse à un message situé dans une autre conversation', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessage({ id: 'msg-autre', conversationId: 'conv-2' }),
+      );
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+          replyToId: 'msg-autre',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('crée le message LOCATION avec les coordonnées, fait remonter la conversation et notifie', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = {
+        ...buildMessage({ type: 'LOCATION', text: null }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: false,
+          expiresAt: null,
+          endedAt: null,
+        },
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.sendLocation('user-1', {
+        conversationId: 'conv-1',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      });
+
+      expect(result.location).toEqual({
+        latitude: 48.8566,
+        longitude: 2.3522,
+        isLive: false,
+        expiresAt: null,
+        endedAt: null,
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:new',
+        expect.objectContaining({ id: created.id }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '📍 Position' }),
+      );
+    });
+
+    it('refuse une position en direct sans durée', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('calcule expiresAt à partir de durationSeconds pour une position en direct, et adapte le texte de notification', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'LOCATION', text: null }), reads: [] },
+        {},
+      ]);
+
+      const before = Date.now();
+      await service.sendLocation('user-1', {
+        conversationId: 'conv-1',
+        latitude: 48.8566,
+        longitude: 2.3522,
+        isLive: true,
+        durationSeconds: 900,
+      });
+
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining imbriqué est typé `any`, assert de test uniquement.
+          data: expect.objectContaining({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            location: expect.objectContaining({
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              create: expect.objectContaining({ isLive: true }),
+            }),
+          }),
+        }),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- mock.calls est typé `any[][]`, casté juste après, assert de test uniquement.
+      const createCall = prisma.message.create.mock.calls[0][0] as {
+        data: { location: { create: { expiresAt: Date } } };
+      };
+      const expiresAt = createCall.data.location.create.expiresAt;
+      expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 900 * 1000);
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '📍 Position en direct' }),
+      );
+    });
+  });
+
+  describe('updateLiveLocation', () => {
+    function buildLiveLocationMessage(overrides: Record<string, unknown> = {}) {
+      return {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() + 60_000),
+          endedAt: null,
+        },
+        ...overrides,
+      };
+    }
+
+    it("404 si le message n'existe pas, n'est pas de type LOCATION, n'est pas en direct, ou n'appartient pas à l'appelant (jamais 403)", async () => {
+      prisma.message.findUnique.mockResolvedValueOnce(null);
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      prisma.message.findUnique.mockResolvedValueOnce(
+        buildLiveLocationMessage({ senderId: 'user-2' }),
+      );
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      prisma.message.findUnique.mockResolvedValueOnce(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, isLive: false },
+        }),
+      );
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('met à jour la position, diffuse message:updated (y compris à soi-même) mais ne notifie jamais', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildLiveLocationMessage());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, latitude: 1, longitude: 2 },
+        }),
+      );
+
+      const result = await service.updateLiveLocation('user-1', 'msg-1', {
+        latitude: 1,
+        longitude: 2,
+      });
+
+      expect(prisma.locationMessage.update).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1' },
+        data: { latitude: 1, longitude: 2 },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.objectContaining({ id: result.id }),
+      );
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien (silencieusement) si le partage a déjà expiré', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: {
+            ...buildLiveLocationMessage().location,
+            expiresAt: new Date(Date.now() - 1000),
+          },
+        }),
+      );
+
+      await service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 2 });
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien si le partage a déjà été arrêté (endedAt)', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, endedAt: new Date() },
+        }),
+      );
+
+      await service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 2 });
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stopLiveLocation', () => {
+    it('marque endedAt et diffuse message:updated', async () => {
+      const message = {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() + 60_000),
+          endedAt: null,
+        },
+      };
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...message,
+        location: { ...message.location, endedAt: new Date() },
+      });
+
+      await service.stopLiveLocation('user-1', 'msg-1');
+
+      expect(prisma.locationMessage.update).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1' },
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé `any`, assert de test uniquement.
+        data: { endedAt: expect.any(Date) },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.any(Object),
+      );
+    });
+
+    it('est idempotent : arrêter un partage déjà terminé ne réécrit rien', async () => {
+      const message = {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() - 1000),
+          endedAt: null,
+        },
+      };
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue(message);
+
+      await service.stopLiveLocation('user-1', 'msg-1');
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sendImage', () => {
+    it("refuse si aucun fichier n'est fourni", async () => {
+      await expect(
+        service.sendImage('user-1', { conversationId: 'conv-1' }, undefined),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('refuse un type MIME non supporté', async () => {
+      await expect(
+        service.sendImage(
+          'user-1',
+          { conversationId: 'conv-1' },
+          buildImageFile({ mimetype: 'image/tiff' }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('refuse un fichier trop volumineux', async () => {
+      await expect(
+        service.sendImage(
+          'user-1',
+          { conversationId: 'conv-1' },
+          buildImageFile({ size: 9 * 1024 * 1024 }),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.sendImage('user-1', { conversationId: 'conv-1' }, buildImageFile()),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('stocke le fichier, crée le message IMAGE et notifie les autres membres', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = {
+        ...buildMessage({ type: 'IMAGE', text: 'une légende' }),
+        reads: [],
+        attachments: [
+          {
+            id: 'att-1',
+            mimeType: 'image/jpeg',
+            sizeBytes: 123,
+            type: 'IMAGE',
+            fileName: null,
+            durationSeconds: null,
+            width: null,
+            height: null,
+          },
+        ],
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.sendImage(
+        'user-1',
+        { conversationId: 'conv-1', text: 'une légende' },
+        buildImageFile(),
+      );
+
+      expect(storage.save).toHaveBeenCalledWith(expect.any(Buffer), 'attachment', 'jpg');
+      expect(result.type).toBe('IMAGE');
+      expect(result.attachments).toEqual([
+        {
+          id: 'att-1',
+          url: '/api/v1/messages/attachments/att-1',
+          mimeType: 'image/jpeg',
+          sizeBytes: 123,
+          type: 'IMAGE',
+          fileName: null,
+          durationSeconds: null,
+          width: null,
+          height: null,
+        },
+      ]);
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:new',
+        expect.objectContaining({ type: 'IMAGE' }),
+      );
+    });
+  });
+
+  describe('sendMedia', () => {
+    function buildVideoFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
+      return buildImageFile({
+        fieldname: 'media',
+        originalname: 'clip.mp4',
+        mimetype: 'video/mp4',
+        ...overrides,
+      });
+    }
+
+    it("refuse si aucun fichier n'est fourni", async () => {
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, undefined),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, []),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('refuse plus de fichiers que la limite de l’album', async () => {
+      const files = Array.from({ length: 11 }, () => buildImageFile());
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, files),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('refuse un type MIME non supporté (aucun fichier stocké, même les valides)', async () => {
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, [
+          buildImageFile(),
+          buildImageFile({ mimetype: 'application/pdf' }),
+        ]),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('refuse une vidéo dépassant la limite vidéo (distincte de la limite image)', async () => {
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, [
+          buildVideoFile({ size: 51 * 1024 * 1024 }),
+        ]),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+      await expect(
+        service.sendMedia('user-1', { conversationId: 'conv-1' }, [buildImageFile()]),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('stocke chaque fichier avec sa position, classe image/vidéo, et crée un seul message MEDIA_ALBUM', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      storage.save
+        .mockResolvedValueOnce({ key: 'attachment/1.jpg', sizeBytes: 111 })
+        .mockResolvedValueOnce({ key: 'attachment/2.mp4', sizeBytes: 222 });
+      const created = {
+        ...buildMessage({ type: 'MEDIA_ALBUM', text: null }),
+        reads: [],
+        attachments: [
+          {
+            id: 'att-1',
+            mimeType: 'image/jpeg',
+            sizeBytes: 111,
+            type: 'IMAGE',
+            fileName: 'a.jpg',
+            durationSeconds: null,
+            width: 800,
+            height: 600,
+          },
+          {
+            id: 'att-2',
+            mimeType: 'video/mp4',
+            sizeBytes: 222,
+            type: 'VIDEO',
+            fileName: 'b.mp4',
+            durationSeconds: 12,
+            width: 1280,
+            height: 720,
+          },
+        ],
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.sendMedia(
+        'user-1',
+        {
+          conversationId: 'conv-1',
+          meta: JSON.stringify([
+            { fileName: 'a.jpg', width: 800, height: 600 },
+            { fileName: 'b.mp4', durationSeconds: 12, width: 1280, height: 720 },
+          ]),
+        },
+        [buildImageFile(), buildVideoFile()],
+      );
+
+      expect(storage.save).toHaveBeenNthCalledWith(1, expect.any(Buffer), 'attachment', 'jpg');
+      expect(storage.save).toHaveBeenNthCalledWith(2, expect.any(Buffer), 'attachment', 'mp4');
+
+      // mock.calls est typé `any[]` par Jest (jest.Mock non générique, comme
+      // ailleurs dans ce fichier) — sans danger ici, assert de test uniquement.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const createCall = prisma.message.create.mock.calls[0][0] as {
+        data: { type: string; attachments: { create: Array<Record<string, unknown>> } };
+      };
+      expect(createCall.data.type).toBe('MEDIA_ALBUM');
+      expect(createCall.data.attachments.create).toEqual([
+        expect.objectContaining({
+          type: 'IMAGE',
+          position: 0,
+          fileName: 'a.jpg',
+          width: 800,
+          height: 600,
+          durationSeconds: null,
+        }),
+        expect.objectContaining({
+          type: 'VIDEO',
+          position: 1,
+          fileName: 'b.mp4',
+          width: 1280,
+          height: 720,
+          durationSeconds: 12,
+        }),
+      ]);
+
+      expect(result.type).toBe('MEDIA_ALBUM');
+      expect(result.attachments).toHaveLength(2);
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:new',
+        expect.objectContaining({ type: 'MEDIA_ALBUM' }),
+      );
+    });
+
+    it('ignore un JSON de métadonnées invalide plutôt que d’échouer (tout retombe sur null)', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      storage.save.mockResolvedValue({ key: 'attachment/1.jpg', sizeBytes: 111 });
+      const created = {
+        ...buildMessage({ type: 'MEDIA_ALBUM', text: null }),
+        reads: [],
+        attachments: [
+          {
+            id: 'att-1',
+            mimeType: 'image/jpeg',
+            sizeBytes: 111,
+            type: 'IMAGE',
+            fileName: null,
+            durationSeconds: null,
+            width: null,
+            height: null,
+          },
+        ],
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      await service.sendMedia('user-1', { conversationId: 'conv-1', meta: '{not valid json' }, [
+        buildImageFile(),
+      ]);
+
+      // mock.calls est typé `any[]` par Jest (jest.Mock non générique, comme
+      // ailleurs dans ce fichier) — sans danger ici, assert de test uniquement.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const createCall = prisma.message.create.mock.calls[0][0] as {
+        data: { attachments: { create: Array<Record<string, unknown>> } };
+      };
+      expect(createCall.data.attachments.create[0]).toEqual(
+        expect.objectContaining({
+          fileName: null,
+          width: null,
+          height: null,
+          durationSeconds: null,
+        }),
+      );
+    });
+
+    it('notifie avec un aperçu adapté au nombre/type de médias (sans légende)', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      storage.save.mockResolvedValue({ key: 'attachment/1.mp4', sizeBytes: 111 });
+      const created = {
+        ...buildMessage({ type: 'MEDIA_ALBUM', text: null }),
+        reads: [],
+        attachments: [
+          {
+            id: 'att-1',
+            mimeType: 'video/mp4',
+            sizeBytes: 111,
+            type: 'VIDEO',
+            fileName: null,
+            durationSeconds: null,
+            width: null,
+            height: null,
+          },
+        ],
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      await service.sendMedia('user-1', { conversationId: 'conv-1' }, [buildVideoFile()]);
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '🎥 Vidéo' }),
+      );
+    });
+  });
+
+  describe('streamAttachment', () => {
+    it('refuse si la pièce jointe est introuvable', async () => {
+      prisma.attachment.findUnique.mockResolvedValue(null);
+
+      await expect(service.streamAttachment('user-1', 'att-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("refuse si l'appelant n'est pas membre de la conversation du message parent", async () => {
+      prisma.attachment.findUnique.mockResolvedValue({
+        id: 'att-1',
+        url: 'attachment/photo.jpg',
+        storageProvider: 'LOCAL',
+        mimeType: 'image/jpeg',
+        message: buildMessage({ conversationId: 'conv-1' }),
+      });
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.streamAttachment('user-1', 'att-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("refuse si le fichier n'existe plus sur le stockage", async () => {
+      prisma.attachment.findUnique.mockResolvedValue({
+        id: 'att-1',
+        url: 'attachment/photo.jpg',
+        storageProvider: 'LOCAL',
+        mimeType: 'image/jpeg',
+        message: buildMessage({ conversationId: 'conv-1' }),
+      });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      storage.exists.mockResolvedValue(false);
+
+      await expect(service.streamAttachment('user-1', 'att-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("renvoie le flux avec le bon type MIME déduit de l'extension stockée", async () => {
+      prisma.attachment.findUnique.mockResolvedValue({
+        id: 'att-1',
+        url: 'attachment/photo.png',
+        storageProvider: 'LOCAL',
+        mimeType: 'image/jpeg', // volontairement différent : l'extension stockée doit primer
+        message: buildMessage({ conversationId: 'conv-1' }),
+      });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      const fakeStream = { pipe: jest.fn() };
+      storage.createReadStream.mockReturnValue(fakeStream);
+
+      const result = await service.streamAttachment('user-1', 'att-1');
+
+      expect(result.mimeType).toBe('image/png');
+      expect(result.stream).toBe(fakeStream);
+    });
+
+    it('refuse de streamer une pièce jointe CLOUDINARY par cette route (toAttachmentDto renvoie déjà son URL signée)', async () => {
+      prisma.attachment.findUnique.mockResolvedValue({
+        id: 'att-1',
+        url: 'glotta/attachment/abc123',
+        storageProvider: 'CLOUDINARY',
+        mimeType: 'image/jpeg',
+        message: buildMessage({ conversationId: 'conv-1' }),
+      });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(service.streamAttachment('user-1', 'att-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(storage.exists).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Mentions (@nom/@everyone, groupe uniquement)', () => {
+    beforeEach(() => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ role: 'ADMIN' }));
+      prisma.conversationMember.findMany.mockImplementation(
+        (args: { where: { user?: unknown } }) =>
+          args.where.user
+            ? Promise.resolve([{ userId: 'user-3' }]) // résolution @nom → membres correspondants
+            : Promise.resolve([{ userId: 'user-2' }, { userId: 'user-3' }]), // otherMemberIds
+      );
+      prisma.$transaction.mockImplementation((ops: unknown[]) =>
+        Promise.all(ops as Promise<unknown>[]),
+      );
+    });
+
+    it('crée une mention individuelle @nom et notifie le membre mentionné (pas soi-même)', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Salut @bob' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]); // transaction de création du message
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...created,
+        mentions: [{ userId: 'user-3' }],
+      });
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Salut @bob' });
+
+      expect(prisma.messageMention.createMany).toHaveBeenCalledWith({
+        data: [{ messageId: created.id, userId: 'user-3' }],
+        skipDuplicates: true,
+      });
+      expect(notifications.create).toHaveBeenCalledWith('user-3', 'MENTION', {
+        conversationId: 'conv-1',
+        messageId: created.id,
+        actorId: 'user-1',
+      });
+    });
+
+    it('jamais de mention pour une conversation DIRECT, même avec @nom dans le texte', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({ type: 'DIRECT' });
+      const created = { ...buildMessage({ text: 'Salut @bob' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Salut @bob' });
+
+      expect(prisma.messageMention.createMany).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'MENTION',
+        expect.anything(),
+      );
+    });
+
+    it('@everyone notifie tous les autres membres quand un ADMIN mentionne', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Réunion @everyone' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({ ...created, mentionsEveryone: true });
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Réunion @everyone' });
+
+      expect(notifications.create).toHaveBeenCalledWith('user-2', 'MENTION', expect.anything());
+      expect(notifications.create).toHaveBeenCalledWith('user-3', 'MENTION', expect.anything());
+    });
+
+    it('refuse silencieusement @everyone pour un simple MEMBER quand mentionEveryonePermission vaut ADMIN_ONLY', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ role: 'MEMBER' }));
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Réunion @everyone' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Réunion @everyone' });
+
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'MENTION',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('Réactions', () => {
+    beforeEach(() => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-2' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...buildMessage({ senderId: 'user-2' }),
+        reads: [],
+        reactions: [{ userId: 'user-1', emoji: '👍' }],
+        attachments: [],
+      });
+    });
+
+    it("ajoute une réaction (upsert), diffuse message:updated, notifie l'auteur (pas soi-même)", async () => {
+      await service.addOrChangeReaction('user-1', 'msg-1', '👍');
+
+      expect(prisma.reaction.upsert).toHaveBeenCalledWith({
+        where: { messageId_userId: { messageId: 'msg-1', userId: 'user-1' } },
+        update: { emoji: '👍' },
+        create: { messageId: 'msg-1', userId: 'user-1', emoji: '👍' },
+      });
+      // L'auteur de la réaction (user-1) est inclus — ses autres appareils
+      // doivent aussi voir sa propre réaction apparaître.
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.objectContaining({ reactions: [{ userId: 'user-1', emoji: '👍' }] }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith('user-2', 'REACTION', {
+        conversationId: 'conv-1',
+        messageId: 'msg-1',
+        emoji: '👍',
+        userId: 'user-1',
+      });
+    });
+
+    it('ne notifie jamais soi-même en réagissant à son propre message', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-1' }));
+
+      await service.addOrChangeReaction('user-1', 'msg-1', '❤️');
+
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('refuse de réagir à un message supprimé', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ deletedAt: new Date() }));
+
+      await expect(service.addOrChangeReaction('user-1', 'msg-1', '👍')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.reaction.upsert).not.toHaveBeenCalled();
+    });
+
+    it('supprime la réaction (idempotent) et diffuse message:updated', async () => {
+      await service.removeReaction('user-1', 'msg-1');
+
+      expect(prisma.reaction.deleteMany).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1', userId: 'user-1' },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('Cloudinary (images/vidéos, jamais les vocaux)', () => {
+    it('sendImage utilise Cloudinary quand configuré, jamais StorageService', async () => {
+      cloudinary.isConfigured.mockReturnValue(true);
+      cloudinary.upload.mockResolvedValue({ publicId: 'glotta/attachment/new123' });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'IMAGE' }), reads: [], attachments: [] },
+        {},
+      ]);
+
+      await service.sendImage('user-1', { conversationId: 'conv-1' }, buildImageFile());
+
+      expect(cloudinary.upload).toHaveBeenCalledWith(expect.any(Buffer), 'attachment', 'image');
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it("sendImage retombe sur StorageService quand Cloudinary n'est pas configuré", async () => {
+      cloudinary.isConfigured.mockReturnValue(false);
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'IMAGE' }), reads: [], attachments: [] },
+        {},
+      ]);
+
+      await service.sendImage('user-1', { conversationId: 'conv-1' }, buildImageFile());
+
+      expect(storage.save).toHaveBeenCalled();
+      expect(cloudinary.upload).not.toHaveBeenCalled();
+    });
+
+    it('toAttachmentDto (via list) génère une URL signée pour une pièce jointe CLOUDINARY, un chemin proxy pour LOCAL', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([
+        {
+          ...buildMessage({ id: 'msg-1' }),
+          reads: [],
+          attachments: [
+            {
+              id: 'att-cloud',
+              url: 'glotta/attachment/abc123',
+              storageProvider: 'CLOUDINARY',
+              type: 'IMAGE',
+              mimeType: 'image/jpeg',
+              sizeBytes: 100,
+              fileName: null,
+              durationSeconds: null,
+              width: null,
+              height: null,
+            },
+            {
+              id: 'att-local',
+              url: 'attachment/xyz.jpg',
+              storageProvider: 'LOCAL',
+              type: 'IMAGE',
+              mimeType: 'image/jpeg',
+              sizeBytes: 100,
+              fileName: null,
+              durationSeconds: null,
+              width: null,
+              height: null,
+            },
+          ],
+        },
+      ]);
+      cloudinary.getSignedUrl.mockReturnValue(
+        'https://res.cloudinary.com/demo/image/authenticated/s--sig--/abc123?__cld_token__=1',
+      );
+
+      const result = await service.list('user-1', 'conv-1', {});
+
+      const [cloudAttachment, localAttachment] = result.items[0].attachments;
+      expect(cloudinary.getSignedUrl).toHaveBeenCalledWith('glotta/attachment/abc123', 'image');
+      expect(cloudAttachment.url).toContain('cloudinary.com');
+      expect(localAttachment.url).toBe('/api/v1/messages/attachments/att-local');
+    });
+  });
+
+  describe('edit', () => {
+    it("refuse de modifier le message d'un autre utilisateur", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'autre-user' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(service.edit('user-1', 'msg-1', { text: 'modifié' })).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(prisma.message.update).not.toHaveBeenCalled();
+    });
+
+    it("refuse si l'appelant n'est plus membre de la conversation", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.edit('user-1', 'msg-1', { text: 'modifié' })).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('modifie le message et horodate editedAt', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue({
+        ...buildMessage({ text: 'modifié', editedAt: new Date() }),
+        reads: [],
+      });
+
+      const result = await service.edit('user-1', 'msg-1', { text: 'modifié' });
+
+      expect(result.text).toBe('modifié');
+      expect(result.editedAt).not.toBeNull();
+    });
+  });
+
+  describe('remove', () => {
+    it('est idempotent : ne relance pas de suppression sur un message déjà supprimé', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ deletedAt: new Date() }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await service.remove('user-1', 'msg-1');
+
+      expect(prisma.message.update).not.toHaveBeenCalled();
+    });
+
+    it('vide le texte et horodate deletedAt', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue({
+        ...buildMessage({ text: null, deletedAt: new Date() }),
+        reads: [],
+        attachments: [],
+      });
+
+      const result = await service.remove('user-1', 'msg-1');
+
+      expect(result.text).toBeNull();
+      expect(result.deletedAt).not.toBeNull();
+    });
+
+    it('efface aussi le fichier de la pièce jointe pour un message IMAGE', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ type: 'IMAGE' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue({
+        ...buildMessage({ type: 'IMAGE', text: null, deletedAt: new Date() }),
+        reads: [],
+        attachments: [{ id: 'att-1', mimeType: 'image/jpeg', sizeBytes: 123 }],
+      });
+      prisma.attachment.findMany.mockResolvedValue([{ id: 'att-1', url: 'attachment/photo.jpg' }]);
+
+      await service.remove('user-1', 'msg-1');
+
+      expect(storage.delete).toHaveBeenCalledWith('attachment/photo.jpg');
+    });
+  });
+
+  describe('deleteForMe', () => {
+    it("n'importe quel membre peut supprimer pour lui-même, pas seulement l'auteur", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-2' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ userId: 'user-1' }));
+
+      await service.deleteForMe('user-1', 'msg-1');
+
+      expect(prisma.messageDeletion.upsert).toHaveBeenCalledWith({
+        where: { messageId_userId: { messageId: 'msg-1', userId: 'user-1' } },
+        create: { messageId: 'msg-1', userId: 'user-1' },
+        update: {},
+      });
+    });
+
+    it("refuse si l'utilisateur n'est pas membre de la conversation", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.deleteForMe('user-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.messageDeletion.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pin/unpin', () => {
+    it('épingle un message et diffuse message:updated aux autres membres', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.update.mockResolvedValue({
+        ...buildMessage({ pinnedAt: new Date(), pinnedById: 'user-1' }),
+        reads: [],
+      });
+
+      const result = await service.pin('user-1', 'msg-1');
+
+      expect(result.pinnedAt).not.toBeNull();
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé
+         `any` par @types/jest, sans danger dans une simple assertion. */
+      expect(prisma.message.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { pinnedAt: expect.any(Date), pinnedById: 'user-1' },
+        }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:updated',
+        expect.anything(),
+      );
+    });
+
+    it('désépingle en effaçant pinnedAt/pinnedById', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ pinnedAt: new Date() }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue({ ...buildMessage(), reads: [] });
+
+      await service.unpin('user-1', 'msg-1');
+
+      expect(prisma.message.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { pinnedAt: null, pinnedById: null } }),
+      );
+    });
+  });
+
+  describe('listPinned', () => {
+    it('renvoie uniquement les messages épinglés, triés du plus récent', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([
+        { ...buildMessage({ id: 'msg-2', pinnedAt: new Date() }), reads: [] },
+      ]);
+
+      const result = await service.listPinned('user-1', 'conv-1');
+
+      expect(prisma.message.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { conversationId: 'conv-1', pinnedAt: { not: null } },
+          orderBy: { pinnedAt: 'desc' },
+        }),
+      );
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('list', () => {
+    it("refuse de lister les messages d'une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.list('user-1', 'conv-1', {})).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.message.findMany).not.toHaveBeenCalled();
+    });
+
+    it('renvoie les messages en ordre chronologique avec accusé de lecture', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      const readAt = new Date();
+      const older = { ...buildMessage({ id: 'msg-1', text: 'plus ancien' }), reads: [] };
+      const newer = {
+        ...buildMessage({ id: 'msg-2', text: 'plus récent' }),
+        reads: [{ userId: 'user-2', readAt }],
+      };
+      // Le service demande `limit + 1` (desc) pour détecter s'il reste une page.
+      prisma.message.findMany.mockResolvedValue([newer, older]);
+
+      const result = await service.list('user-1', 'conv-1', { limit: 2 });
+
+      expect(result.items.map((m) => m.id)).toEqual(['msg-1', 'msg-2']);
+      expect(result.items[1]?.readAt).toEqual(readAt);
+      expect(result.nextCursor).toBeNull();
+    });
+  });
+
+  describe('search', () => {
+    it("refuse de rechercher dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.search('user-1', 'conv-1', 'salut')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.message.findMany).not.toHaveBeenCalled();
+    });
+
+    it('filtre par texte (insensible à la casse), jamais un message supprimé', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([
+        { ...buildMessage({ text: 'Salut toi' }), reads: [] },
+      ]);
+
+      const result = await service.search('user-1', 'conv-1', 'salut');
+
+      expect(prisma.message.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            conversationId: 'conv-1',
+            deletedAt: null,
+            deletions: { none: { userId: 'user-1' } },
+            text: { contains: 'salut', mode: 'insensitive' },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+      );
+      expect(result.items).toHaveLength(1);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('pagine par curseur comme les autres listes', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      const rows = Array.from({ length: 3 }, (_, i) => ({
+        ...buildMessage({ id: `msg-${i}`, text: 'salut' }),
+        reads: [],
+      }));
+      prisma.message.findMany.mockResolvedValue(rows);
+
+      const result = await service.search('user-1', 'conv-1', 'salut', undefined, 2);
+
+      expect(result.items).toHaveLength(2);
+      expect(result.nextCursor).toBe('msg-1');
+    });
+  });
+
+  describe('listAroundMessage', () => {
+    it("refuse pour une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.listAroundMessage('user-1', 'conv-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.message.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("404 si le message n'existe pas ou appartient à une autre conversation", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue(null);
+
+      await expect(service.listAroundMessage('user-1', 'conv-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+
+      prisma.message.findUnique.mockResolvedValue({
+        conversationId: 'conv-autre',
+        createdAt: new Date(),
+      });
+      await expect(service.listAroundMessage('user-1', 'conv-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('renvoie les messages avant (inclus) et après le message ciblé, en ordre chronologique', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      const targetDate = new Date('2026-01-01T10:00:00Z');
+      prisma.message.findUnique.mockResolvedValue({
+        conversationId: 'conv-1',
+        createdAt: targetDate,
+      });
+
+      const olderAndSelf = [
+        { ...buildMessage({ id: 'msg-2', text: 'cible' }), reads: [] }, // le plus récent des "<=", donc la cible elle-même
+        { ...buildMessage({ id: 'msg-1', text: 'avant' }), reads: [] },
+      ];
+      const newer = [{ ...buildMessage({ id: 'msg-3', text: 'après' }), reads: [] }];
+      prisma.message.findMany.mockResolvedValueOnce(olderAndSelf).mockResolvedValueOnce(newer);
+
+      const result = await service.listAroundMessage('user-1', 'conv-1', 'msg-2');
+
+      expect(result.items.map((m) => m.id)).toEqual(['msg-1', 'msg-2', 'msg-3']);
+      expect(result.matchedMessageId).toBe('msg-2');
+      expect(result.hasOlder).toBe(false);
+    });
+  });
+
+  describe('listMedia', () => {
+    it("refuse de lister les médias d'une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.listMedia('user-1', 'conv-1')).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.attachment.findMany).not.toHaveBeenCalled();
+    });
+
+    it('renvoie les pièces jointes de la conversation, les plus récentes en premier, avec une URL authentifiée', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.attachment.findMany.mockResolvedValue([
+        {
+          id: 'att-2',
+          mimeType: 'image/jpeg',
+          sizeBytes: 500,
+          type: 'IMAGE',
+          fileName: null,
+          durationSeconds: null,
+          width: 800,
+          height: 600,
+        },
+      ]);
+
+      const result = await service.listMedia('user-1', 'conv-1');
+
+      expect(prisma.attachment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { message: { conversationId: 'conv-1', deletedAt: null } },
+          orderBy: { message: { createdAt: 'desc' } },
+        }),
+      );
+      expect(result.items).toEqual([
+        expect.objectContaining({
+          id: 'att-2',
+          url: '/api/v1/messages/attachments/att-2',
+          type: 'IMAGE',
+        }),
+      ]);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it("pagine par curseur — jamais toute la galerie d'un coup, même avec des centaines de médias", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      // Le service demande `limit + 1` pour détecter s'il reste une page.
+      const extra = Array.from({ length: 3 }, (_, i) => ({
+        id: `att-${i}`,
+        mimeType: 'image/jpeg',
+        sizeBytes: 100,
+        type: 'IMAGE' as const,
+        fileName: null,
+        durationSeconds: null,
+        width: null,
+        height: null,
+      }));
+      prisma.attachment.findMany.mockResolvedValue(extra);
+
+      const result = await service.listMedia('user-1', 'conv-1', undefined, 2);
+
+      expect(prisma.attachment.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 3 }));
+      expect(result.items).toHaveLength(2);
+      expect(result.nextCursor).toBe('att-1');
+    });
+
+    it('reprend après le curseur fourni, sans skip côté service sans curseur', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.attachment.findMany.mockResolvedValue([]);
+
+      await service.listMedia('user-1', 'conv-1', 'att-5', 8);
+
+      expect(prisma.attachment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: { id: 'att-5' }, skip: 1 }),
+      );
+    });
+
+    it("ne renvoie jamais les pièces jointes d'un message supprimé (exclues côté requête)", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.attachment.findMany.mockResolvedValue([]);
+
+      await service.listMedia('user-1', 'conv-1');
+
+      expect(prisma.attachment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          where: expect.objectContaining({ message: expect.objectContaining({ deletedAt: null }) }),
+        }),
+      );
+    });
+  });
+
+  describe('markConversationRead', () => {
+    it("refuse pour une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.markConversationRead('user-1', 'conv-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('crée les accusés de lecture, marque livré au passage et diffuse message:read', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([{ id: 'msg-1' }, { id: 'msg-2' }]);
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([{}, {}, {}]);
+
+      await service.markConversationRead('user-1', 'conv-1');
+
+      // Matchers Jest imbriqués typés `any` dans @types/jest — sans danger
+      // ici, ce sont des assertions de test, pas du code applicatif.
+      expect(prisma.messageRead.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: [
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            { messageId: 'msg-1', userId: 'user-1', readAt: expect.any(Date) },
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            { messageId: 'msg-2', userId: 'user-1', readAt: expect.any(Date) },
+          ],
+        }),
+      );
+      expect(prisma.message.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          where: expect.objectContaining({ id: { in: ['msg-1', 'msg-2'] } }),
+        }),
+      );
+      // Inclut aussi le lecteur lui-même (pas seulement l'autre membre) :
+      // ses propres autres appareils doivent remettre à zéro leur badge
+      // non-lu pour cette conversation (section 21-22, synchronisation
+      // multi-appareils) — voir le commentaire dans markConversationRead.
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:read',
+        expect.objectContaining({ conversationId: 'conv-1', readerId: 'user-1' }),
+      );
+    });
+
+    it("ne crée rien s'il n'y a aucun message non lu, mais avance lastReadAt", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([]);
+
+      await service.markConversationRead('user-1', 'conv-1');
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.conversationMember.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { conversationId_userId: { conversationId: 'conv-1', userId: 'user-1' } },
+        }),
+      );
+      expect(events.emitToUsers).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('toMessageDto', () => {
+  const cloudinary = {} as CloudinaryProvider;
+
+  it('renvoie replyTo: null quand le message ne répond à rien', () => {
+    const dto = toMessageDto({ ...buildMessage(), reads: [] }, cloudinary);
+    expect(dto.replyTo).toBeNull();
+  });
+
+  it('renvoie un résumé compact du message cité quand replyTo est chargé', () => {
+    const dto = toMessageDto(
+      {
+        ...buildMessage({ replyToId: 'msg-original' }),
+        reads: [],
+        replyTo: {
+          id: 'msg-original',
+          senderId: 'user-2',
+          type: 'TEXT',
+          text: 'Le message original',
+          deletedAt: null,
+        },
+      },
+      cloudinary,
+    );
+    expect(dto.replyTo).toEqual({
+      id: 'msg-original',
+      senderId: 'user-2',
+      type: 'TEXT',
+      text: 'Le message original',
+      deletedAt: null,
+    });
+  });
+
+  it('propage deletedAt du message cité (permet au frontend d\'afficher "Message supprimé" dans la citation)', () => {
+    const deletedAt = new Date();
+    const dto = toMessageDto(
+      {
+        ...buildMessage({ replyToId: 'msg-original' }),
+        reads: [],
+        replyTo: {
+          id: 'msg-original',
+          senderId: 'user-2',
+          type: 'TEXT',
+          text: 'Le message original',
+          deletedAt,
+        },
+      },
+      cloudinary,
+    );
+    expect(dto.replyTo?.deletedAt).toBe(deletedAt);
+  });
+});

@@ -1,0 +1,1337 @@
+// Riiberaka — schéma de données unifié.
+//
+// Origine des modèles : identité / chat / notifications / médias repris de
+// Glotta (backend de messagerie) ; restaurants / commandes / livraison / promos
+// / avis / favoris / adresses repris et adaptés de Food. Voir ARCHITECTURE.md.
+//
+// Règles transverses :
+//  - Tous les montants sont des entiers en FCFA (XOF n'a pas de sous-unité).
+//  - Le statut "en ligne" n'est jamais persisté (Redis), seul User.lastSeenAt l'est.
+//  - Aucune position GPS n'est historisée : elle vit dans Redis, avec un TTL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 : l'URL de connexion vit dans prisma.config.ts (CLI) et est passée
+// au driver adapter dans PrismaService (runtime).
+datasource db {
+  provider = "postgresql"
+}
+
+// ===========================================================================
+// Comptes & authentification
+// ===========================================================================
+
+enum Role {
+  CLIENT
+  RESTAURANT
+  LIVREUR
+  ADMIN
+}
+
+model User {
+  id       String  @id @default(cuid())
+  username String  @unique
+  email    String? @unique
+  phone    String? @unique
+  // Nullable : un compte créé via le parcours téléphone+OTP n'a pas de mot de passe.
+  passwordHash    String?
+  phoneVerifiedAt DateTime?
+  emailVerifiedAt DateTime?
+  // Hash SHA-256 du numéro normalisé (voir phone-hash.util.ts).
+  phoneHash       String?   @unique
+
+  firstName String
+  lastName  String
+
+  // Fixé exclusivement côté serveur : jamais lu depuis le corps d'une requête
+  // d'inscription (voir AuthService.register, accountType → rôle). ADMIN n'est
+  // attribuable que par seed ou par un admin existant.
+  role       Role      @default(CLIENT)
+  isActive   Boolean   @default(true)
+  suspendedReason String?
+  // Le statut "en ligne" lui-même reste en Redis, jamais en base.
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  profile Profile?
+
+  // --- Chat ---
+  conversationMemberships ConversationMember[]
+  conversationsCreated    Conversation[]         @relation("ConversationCreatedBy")
+  sentMessages            Message[]              @relation("MessageSender")
+  systemMessageTargets    Message[]              @relation("MessageSystemTarget")
+  messageReads            MessageRead[]
+  messageDeletions        MessageDeletion[]
+  reactions               Reaction[]
+  mentions                MessageMention[]
+  groupInvitesCreated     GroupInvite[]          @relation("GroupInviteCreatedBy")
+  attachments             Attachment[]
+
+  // --- Appels ---
+  callsMade     Call[] @relation("CallCaller")
+  callsReceived Call[] @relation("CallCallee")
+
+  // --- Compte ---
+  sessions            UserSession[]
+  passwordResetTokens PasswordResetToken[]
+  notifications       Notification[]
+  pushSubscriptions   PushSubscription[]
+
+  // --- Marketplace ---
+  restaurantMemberships RestaurantMember[]
+  driverProfile         DriverProfile?
+  addresses             Address[]
+  cart                  Cart?
+  orders                Order[]            @relation("OrderClient")
+  reviews               Review[]
+  favorites             Favorite[]
+  promoRedemptions      PromoRedemption[]
+
+  // --- Modération / audit ---
+  reportsFiled    Report[]   @relation("ReportReporter")
+  reportsResolved Report[]   @relation("ReportResolver")
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+enum SessionType {
+  MOBILE
+  WEB
+}
+
+model UserSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type SessionType @default(WEB)
+
+  refreshTokenHash         String
+  // Hash supplanté lors de la dernière rotation — accepté brièvement
+  // (AuthService.REFRESH_GRACE_PERIOD_MS) pour absorber deux onglets qui
+  // rafraîchissent presque simultanément.
+  previousRefreshTokenHash String?
+  userAgent                String?
+  ipAddress                String?
+  deviceLabel              String?
+  // Jeton FCM de CET appareil (jamais partagé entre sessions).
+  fcmToken                 String?
+
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  pushSubscriptions PushSubscription[]
+
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+model PasswordResetToken {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Seul le hash est conservé : une fuite de la base ne rend aucun token utilisable.
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// Code à 6 chiffres par SMS — jamais en clair. Une seule ligne active par
+// (phone, purpose).
+model OtpRequest {
+  id       String     @id @default(cuid())
+  phone    String
+  purpose  OtpPurpose
+  codeHash String
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(5)
+
+  verifiedAt DateTime?
+  consumedAt DateTime?
+
+  ipAddress String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([phone, purpose])
+  @@map("otp_requests")
+}
+
+enum OtpPurpose {
+  REGISTER
+  LOGIN
+  CHANGE_PHONE
+}
+
+// ===========================================================================
+// Profil
+// ===========================================================================
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // URL externe (PATCH /users/me/profile).
+  avatarUrl             String?
+  // Clé de stockage d'un avatar téléversé (POST /users/me/avatar).
+  avatarStorageKey      String?
+  avatarStorageProvider MediaStorageProvider @default(LOCAL)
+
+  showLastSeen     Boolean @default(true)
+  showOnlineStatus Boolean @default(true)
+  showReadReceipts Boolean @default(true)
+
+  notificationsEnabled Boolean @default(true)
+  // Masque l'aperçu du message dans les notifications système.
+  hideNotificationContent Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("profiles")
+}
+
+// Stockage interchangeable des médias. LOCAL par défaut ; CLOUDINARY dès que
+// les 3 variables sont renseignées.
+enum MediaStorageProvider {
+  LOCAL
+  CLOUDINARY
+}
+
+// ===========================================================================
+// Restaurants
+// ===========================================================================
+
+// Cycle d'approbation commun aux restaurants et aux livreurs.
+enum ApprovalStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Restaurant {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        String
+  description String?
+  phone       String?
+
+  address   String
+  city      String  @default("Lomé")
+  quarter   String?
+  latitude  Float?
+  longitude Float?
+
+  logoUrl  String?
+  coverUrl String?
+
+  status       ApprovalStatus @default(PENDING)
+  statusReason String?
+  approvedAt   DateTime?
+
+  // Frais de livraison forfaitaires facturés au client, en FCFA.
+  deliveryFee    Int @default(0)
+  minOrderAmount Int @default(0)
+  prepTimeMin    Int @default(20)
+  prepTimeMax    Int @default(35)
+
+  // Fermeture manuelle immédiate (indépendante des horaires).
+  isPaused Boolean @default(false)
+
+  // Pièces justificatives contrôlées par un admin avant approbation.
+  ownerIdCardUrl          String?
+  businessRegistrationUrl String?
+  storefrontPhotoUrl      String?
+  // Compte de réception des paiements (numéro Mobile Money).
+  paymentAccountNumber    String?
+
+  // Dénormalisés : recalculés par ReviewsService.
+  rating      Float @default(0)
+  reviewCount Int   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members        RestaurantMember[]
+  categories     RestaurantCategory[]
+  hours          RestaurantHours[]
+  closures       RestaurantClosure[]
+  menuCategories MenuCategory[]
+  menuItems      MenuItem[]
+  orders         Order[]
+  reviews        Review[]
+  favorites      Favorite[]
+  promoCodes     PromoCode[]
+  carts          Cart[]
+
+  @@index([status])
+  @@index([city])
+  @@map("restaurants")
+}
+
+enum RestaurantMemberRole {
+  OWNER
+  STAFF
+}
+
+model RestaurantMember {
+  id           String               @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         RestaurantMemberRole @default(STAFF)
+  createdAt    DateTime             @default(now())
+
+  @@unique([restaurantId, userId])
+  @@index([userId])
+  @@map("restaurant_members")
+}
+
+// Catégories de cuisine affichées sur l'accueil client (Poulet, Riz, Burger...).
+model RestaurantCategory {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  icon        String? // emoji
+  position    Int          @default(0)
+  isActive    Boolean      @default(true)
+  restaurants Restaurant[]
+
+  @@map("restaurant_categories")
+}
+
+// Plages d'ouverture hebdomadaires. dayOfWeek suit ISO 8601 : 1 = lundi … 7 =
+// dimanche. Plusieurs lignes par jour = service coupé (midi / soir). Heures
+// "HH:mm" dans le fuseau du restaurant (Africa/Lome, UTC+0, sans DST).
+model RestaurantHours {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int
+  opensAt      String
+  closesAt     String
+
+  @@unique([restaurantId, dayOfWeek, opensAt])
+  @@map("restaurant_hours")
+}
+
+// Fermeture exceptionnelle (congés, événement) — prioritaire sur les horaires.
+model RestaurantClosure {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  startsAt     DateTime
+  endsAt       DateTime
+  reason       String?
+
+  @@index([restaurantId, startsAt])
+  @@map("restaurant_closures")
+}
+
+// ===========================================================================
+// Menu
+// ===========================================================================
+
+model MenuCategory {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name         String
+  position     Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  items MenuItem[]
+
+  @@index([restaurantId, position])
+  @@map("menu_categories")
+}
+
+model MenuItem {
+  id           String        @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  categoryId   String?
+  category     MenuCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  name        String
+  description String?
+  price       Int
+  imageUrl    String?
+  isAvailable Boolean @default(true)
+  position    Int     @default(0)
+  // null = illimité
+  stock       Int?
+  maxQuantity Int?
+
+  rating      Float @default(0)
+  reviewCount Int   @default(0)
+
+  // Suppression logique : les OrderItem historiques gardent leur snapshot.
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  optionGroups MenuItemOptionGroup[]
+  orderItems   OrderItem[]
+  cartItems    CartItem[]
+
+  @@index([restaurantId, categoryId])
+  @@map("menu_items")
+}
+
+// Groupe d'options d'un plat : "Taille" (1 choix obligatoire), "Suppléments"
+// (0 à 3 choix)... Couvre à la fois options et variations.
+model MenuItemOptionGroup {
+  id         String   @id @default(cuid())
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  name       String
+  minSelect  Int      @default(0)
+  maxSelect  Int      @default(1)
+  position   Int      @default(0)
+
+  options MenuItemOption[]
+
+  @@index([menuItemId])
+  @@map("menu_item_option_groups")
+}
+
+model MenuItemOption {
+  id          String              @id @default(cuid())
+  groupId     String
+  group       MenuItemOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name        String
+  priceDelta  Int                 @default(0)
+  isAvailable Boolean             @default(true)
+  position    Int                 @default(0)
+
+  @@index([groupId])
+  @@map("menu_item_options")
+}
+
+// ===========================================================================
+// Client : adresses, panier, favoris, avis
+// ===========================================================================
+
+enum AddressLabel {
+  MAISON
+  TRAVAIL
+  AUTRE
+}
+
+model Address {
+  id          String       @id @default(cuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       AddressLabel @default(AUTRE)
+  customLabel String?
+  fullAddress String
+  quarter     String?
+  // Repère : décisif pour un livreur là où les adresses postales manquent.
+  landmark    String?
+  // Nullable : une adresse saisie à la main peut ne pas avoir de coordonnées.
+  latitude    Float?
+  longitude   Float?
+  isDefault   Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  orders Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+// Panier côté serveur : un seul par utilisateur, un seul restaurant à la fois.
+model Cart {
+  id           String      @id @default(cuid())
+  userId       String      @unique
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurantId String?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  promoCode    String?
+  updatedAt    DateTime    @updatedAt
+
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id         String   @id @default(cuid())
+  cartId     String
+  cart       Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  quantity   Int
+  // Ids de MenuItemOption sélectionnées — revalidées à la commande.
+  optionIds  String[]
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([cartId])
+  @@map("cart_items")
+}
+
+model Favorite {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, restaurantId])
+  @@index([userId])
+  @@map("favorites")
+}
+
+// Un avis par commande livrée : impossible sans commande réelle.
+model Review {
+  id           String     @id @default(cuid())
+  orderId      String     @unique
+  order        Order      @relation(fields: [orderId], references: [id])
+  clientId     String
+  client       User       @relation(fields: [clientId], references: [id])
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  rating  Int // 1 à 5
+  comment String?
+  // Réponse du restaurant.
+  reply   String?
+  repliedAt DateTime?
+  // Masqué par la modération.
+  isHidden Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([restaurantId, createdAt])
+  @@index([clientId])
+  @@map("reviews")
+}
+
+// ===========================================================================
+// Promotions
+// ===========================================================================
+
+enum PromoDiscountType {
+  PERCENT
+  FIXED
+}
+
+model PromoCode {
+  id            String            @id @default(cuid())
+  code          String            @unique
+  description   String?
+  discountType  PromoDiscountType
+  // Pourcentage (1-100) si PERCENT, montant en FCFA si FIXED.
+  discountValue Int
+  // Plafond de la remise en FCFA (utile pour un pourcentage).
+  maxDiscount    Int?
+  minOrderAmount Int?
+  // null = illimité
+  maxUses        Int?
+  maxUsesPerUser Int?
+  usedCount      Int               @default(0)
+  isActive       Boolean           @default(true)
+  startsAt       DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime          @default(now())
+
+  // null = valable sur toute la plateforme.
+  restaurantId String?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+
+  redemptions PromoRedemption[]
+  orders      Order[]
+
+  @@map("promo_codes")
+}
+
+// Une ligne par commande : garantit l'usage unique par commande et permet de
+// plafonner l'usage par utilisateur.
+model PromoRedemption {
+  id             String    @id @default(cuid())
+  promoCodeId    String
+  promoCode      PromoCode @relation(fields: [promoCodeId], references: [id])
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  orderId        String    @unique
+  order          Order     @relation(fields: [orderId], references: [id])
+  discountAmount Int
+  createdAt      DateTime  @default(now())
+
+  @@index([promoCodeId, userId])
+  @@map("promo_redemptions")
+}
+
+// ===========================================================================
+// Commandes
+// ===========================================================================
+
+// Écrit uniquement par OrderStateMachine — jamais depuis un corps de requête.
+enum OrderStatus {
+  PENDING
+  ACCEPTED
+  PREPARING
+  READY
+  ASSIGNED
+  PICKED_UP
+  ON_THE_WAY
+  DELIVERED
+  CANCELLED
+  REJECTED
+}
+
+enum DeliveryType {
+  DELIVERY
+  PICKUP
+}
+
+enum PaymentMethod {
+  CASH_ON_DELIVERY
+  TMONEY
+  FLOOZ
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+model Order {
+  id          String @id @default(cuid())
+  // Numéro lisible affiché aux utilisateurs ("#1842").
+  orderNumber Int    @unique @default(autoincrement())
+
+  clientId     String
+  client       User       @relation("OrderClient", fields: [clientId], references: [id])
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  status       OrderStatus  @default(PENDING)
+  deliveryType DeliveryType @default(DELIVERY)
+
+  subtotal       Int
+  deliveryFee    Int @default(0)
+  discountAmount Int @default(0)
+  total          Int
+
+  promoCodeId String?
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id], onDelete: SetNull)
+
+  // Snapshot d'adresse : la commande ne change jamais si l'adresse enregistrée évolue.
+  addressId       String?
+  addressRef      Address? @relation(fields: [addressId], references: [id], onDelete: SetNull)
+  deliveryAddress String?
+  deliveryLandmark String?
+  latitude        Float?
+  longitude       Float?
+  // Numéro joignable à l'adresse de livraison.
+  contactPhone    String?
+  notes           String?
+
+  paymentMethod PaymentMethod
+  // Dénormalisé depuis Payment ; jamais modifié par une requête du frontend.
+  paymentStatus PaymentStatus @default(PENDING)
+
+  rejectionReason String?
+  cancelReason    String?
+  cancelledById   String?
+
+  acceptedAt  DateTime?
+  preparingAt DateTime?
+  readyAt     DateTime?
+  deliveredAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items         OrderItem[]
+  delivery      Delivery?
+  payments      Payment[]
+  review        Review?
+  redemption    PromoRedemption?
+  conversations Conversation[]
+
+  @@index([clientId, createdAt])
+  @@index([restaurantId, status, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  menuItemId String?
+  menuItem   MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+
+  // Snapshots : le prix et le nom au moment de la commande.
+  name      String
+  unitPrice Int
+  quantity  Int
+  // [{ name, priceDelta }]
+  options   Json     @default("[]")
+  note      String?
+  lineTotal Int
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ===========================================================================
+// Livraison
+// ===========================================================================
+
+enum VehicleType {
+  MOTO
+  VELO
+  VOITURE
+}
+
+model DriverProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+
+  status       ApprovalStatus @default(PENDING)
+  statusReason String?
+
+  vehicleType  VehicleType @default(MOTO)
+  plateNumber  String?
+  vehicleBrand String?
+  vehicleColor String?
+
+  // Pièces d'identité contrôlées par un admin avant approbation.
+  selfieWithIdUrl        String?
+  idCardUrl              String?
+  vehicleRegistrationUrl String?
+  drivingLicenseUrl      String?
+  vehiclePhotoUrl        String?
+  mobileMoneyNumber      String?
+
+  // Disponibilité déclarée. La POSITION n'est jamais stockée ici (Redis).
+  isOnline    Boolean @default(false)
+  isAvailable Boolean @default(false)
+
+  rating          Float @default(0)
+  ratingCount     Int   @default(0)
+  totalOffers     Int   @default(0)
+  acceptedOffers  Int   @default(0)
+  totalDeliveries Int   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries Delivery[]
+  offers     DeliveryOffer[]
+
+  @@index([status, isOnline, isAvailable])
+  @@map("driver_profiles")
+}
+
+// Statut propre à la course ; Order.status en est dérivé par OrderStateMachine.
+enum DeliveryStatus {
+  SEARCHING
+  ASSIGNED
+  AT_RESTAURANT
+  PICKED_UP
+  ON_THE_WAY
+  ARRIVED
+  DELIVERED
+  NO_DRIVER_FOUND
+  CANCELLED
+}
+
+model Delivery {
+  id      String @id @default(cuid())
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  driverId String?
+  driver   DriverProfile? @relation(fields: [driverId], references: [id])
+
+  status      DeliveryStatus @default(SEARCHING)
+  deliveryFee Int            @default(0)
+  distanceKm  Float?
+
+  // Codes anti-fraude : le livreur saisit celui du restaurant pour récupérer,
+  // celui du client pour clore la livraison. Jamais renvoyés au livreur.
+  pickupCode   String
+  deliveryCode String
+
+  searchRadiusKm Float @default(3)
+  searchAttempts Int   @default(0)
+
+  ratingByClient   Int?
+  commentByClient  String?
+  ratingByDriver   Int?
+  commentByDriver  String?
+
+  assignedAt        DateTime?
+  atRestaurantAt    DateTime?
+  pickedUpAt        DateTime?
+  arrivedAt         DateTime?
+  deliveredAt       DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  offers DeliveryOffer[]
+
+  @@index([status])
+  @@index([driverId, status])
+  @@map("deliveries")
+}
+
+enum DeliveryOfferStatus {
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model DeliveryOffer {
+  id          String              @id @default(cuid())
+  deliveryId  String
+  delivery    Delivery            @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  driverId    String
+  driver      DriverProfile       @relation(fields: [driverId], references: [id])
+  status      DeliveryOfferStatus @default(SENT)
+  distanceKm  Float?
+  expiresAt   DateTime
+  respondedAt DateTime?
+  createdAt   DateTime            @default(now())
+
+  @@index([deliveryId])
+  @@index([driverId, status])
+  @@map("delivery_offers")
+}
+
+// ===========================================================================
+// Paiement
+// ===========================================================================
+
+model Payment {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // Identifiant du fournisseur (cash, sandbox, tmoney, flooz...).
+  provider    String
+  method      PaymentMethod
+  amount      Int
+  currency    String        @default("XOF")
+  status      PaymentStatus @default(PENDING)
+  // Référence côté fournisseur, utilisée pour rapprocher les webhooks.
+  providerRef String?
+  metadata    Json?
+
+  paidAt    DateTime?
+  failedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  transactions PaymentTransaction[]
+
+  @@unique([provider, providerRef])
+  @@index([orderId])
+  @@map("payments")
+}
+
+// Journal des événements fournisseur (webhooks). L'unicité de
+// (provider, providerEventId) rend le traitement d'un webhook idempotent.
+model PaymentTransaction {
+  id              String   @id @default(cuid())
+  paymentId       String
+  payment         Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  provider        String
+  providerEventId String
+  type            String
+  payload         Json
+  createdAt       DateTime @default(now())
+
+  @@unique([provider, providerEventId])
+  @@index([paymentId])
+  @@map("payment_transactions")
+}
+
+// ===========================================================================
+// Chat
+// ===========================================================================
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+// Les conversations liées à une commande ou au support sont créées UNIQUEMENT
+// par le serveur (OrdersService / DeliveriesService / SupportService), jamais
+// à la demande d'un client.
+enum ConversationKind {
+  DIRECT
+  ORDER_RESTAURANT
+  ORDER_DELIVERY
+  ORDER_RESTAURANT_DRIVER
+  SUPPORT
+}
+
+enum GroupPermission {
+  ADMIN_ONLY
+  EVERYONE
+}
+
+enum GroupRole {
+  ADMIN
+  MEMBER
+}
+
+model Conversation {
+  id    String           @id @default(cuid())
+  type  ConversationType @default(DIRECT)
+  kind  ConversationKind @default(DIRECT)
+  title String?
+
+  orderId String?
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // Conversation en lecture seule (commande terminée depuis plus de 24 h...).
+  closedAt DateTime?
+
+  // Champs de groupe — dormants au MVP (voir §26 du cahier des charges).
+  description          String?
+  createdById          String?
+  createdBy            User?                @relation("ConversationCreatedBy", fields: [createdById], references: [id])
+  photoStorageKey      String?
+  photoStorageProvider MediaStorageProvider @default(LOCAL)
+
+  editInfoPermission        GroupPermission @default(ADMIN_ONLY)
+  sendMessagesPermission    GroupPermission @default(EVERYONE)
+  addMembersPermission      GroupPermission @default(EVERYONE)
+  sendMediaPermission       GroupPermission @default(EVERYONE)
+  mentionEveryonePermission GroupPermission @default(ADMIN_ONLY)
+
+  members  ConversationMember[]
+  messages Message[]
+  invite   GroupInvite?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orderId, kind])
+  @@map("conversations")
+}
+
+model ConversationMember {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  role GroupRole @default(MEMBER)
+
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+  isArchived Boolean   @default(false)
+  isMuted    Boolean   @default(false)
+  isPinned   Boolean   @default(false)
+  pinnedAt   DateTime?
+  hiddenAt   DateTime?
+  leftAt     DateTime?
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+model GroupInvite {
+  id             String       @id @default(cuid())
+  conversationId String       @unique
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  token          String       @unique
+  createdById    String
+  createdBy      User         @relation("GroupInviteCreatedBy", fields: [createdById], references: [id])
+  isActive       Boolean      @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("group_invites")
+}
+
+enum MessageType {
+  TEXT
+  VOICE
+  IMAGE
+  VIDEO
+  FILE
+  MEDIA_ALBUM
+  LOCATION
+  // Appel audio/vidéo 1:1 — apparaît dans le fil ("Appel manqué", "Appel · 2:14").
+  CALL
+  SYSTEM
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  type MessageType @default(TEXT)
+  text String?
+
+  systemAction       String?
+  systemTargetUserId String?
+  systemTargetUser   User?   @relation("MessageSystemTarget", fields: [systemTargetUserId], references: [id])
+
+  replyToId String?
+  replyTo   Message?  @relation("MessageReplyTo", fields: [replyToId], references: [id])
+  replies   Message[] @relation("MessageReplyTo")
+
+  mentionsEveryone Boolean          @default(false)
+  mentions         MessageMention[]
+
+  voiceMessage VoiceMessage?
+  attachments  Attachment[]
+  reactions    Reaction[]
+  reads        MessageRead[]
+  location     LocationMessage?
+  call         Call?
+
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  // Id généré côté client (UUID) : permet à MessagesService.send de reconnaître
+  // un renvoi après un échec réseau et d'éviter les doublons.
+  clientId String? @unique
+
+  pinnedAt   DateTime?
+  pinnedById String?
+
+  sentAt      DateTime  @default(now())
+  deliveredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deletions MessageDeletion[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+// "Supprimer pour moi" — distinct de Message.deletedAt ("pour tout le monde").
+model MessageDeletion {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deletedAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_deletions")
+}
+
+model MessageRead {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt    DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_reads")
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime @default(now())
+
+  // Une seule réaction par utilisateur et par message, modifiable.
+  @@unique([messageId, userId])
+  @@map("reactions")
+}
+
+model MessageMention {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_mentions")
+}
+
+model VoiceMessage {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  // Clé de stockage interne, jamais un chemin exposé directement.
+  audioStorageKey      String
+  audioStorageProvider MediaStorageProvider @default(LOCAL)
+  audioMimeType        String?
+  durationSeconds      Int
+  // Niveaux d'amplitude pour l'affichage de la forme d'onde.
+  waveform             Json?
+
+  createdAt DateTime @default(now())
+
+  @@map("voice_messages")
+}
+
+enum AttachmentType {
+  IMAGE
+  VIDEO
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String?
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // Clé de stockage local ou public_id Cloudinary, selon storageProvider.
+  url             String
+  mimeType        String
+  sizeBytes       Int
+  storageProvider MediaStorageProvider @default(LOCAL)
+
+  type            AttachmentType @default(IMAGE)
+  fileName        String?
+  durationSeconds Int?
+  width           Int?
+  height          Int?
+  position        Int            @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("attachments")
+}
+
+// Position partagée dans un message : ponctuelle, ou "en direct" pour une
+// durée choisie (jamais historisée au-delà de la dernière valeur).
+model LocationMessage {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  latitude  Float
+  longitude Float
+
+  isLive    Boolean   @default(false)
+  expiresAt DateTime?
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@map("location_messages")
+}
+
+// ===========================================================================
+// Appels (signalisation WebRTC 1:1 entre membres d'une conversation)
+// ===========================================================================
+
+// Un appel est aussi un message (type CALL). La session de signalisation
+// elle-même (SDP, ICE) transite uniquement par CallsGateway, jamais stockée :
+// seul l'aboutissement (accepté, refusé, manqué, terminé, durée) l'est.
+model Call {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  callerId String
+  caller   User   @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  calleeId String
+  callee   User   @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+
+  type   CallType   @default(AUDIO)
+  status CallStatus @default(RINGING)
+
+  startedAt  DateTime  @default(now())
+  answeredAt DateTime?
+  endedAt    DateTime?
+
+  @@index([calleeId, status])
+  @@index([callerId, status])
+  @@map("calls")
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  MISSED
+  DECLINED
+  ENDED
+}
+
+// ===========================================================================
+// Notifications
+// ===========================================================================
+
+enum NotificationType {
+  NEW_MESSAGE
+  NEW_VOICE_MESSAGE
+  MENTION
+  REACTION
+  ADDED_TO_GROUP
+  REMOVED_FROM_GROUP
+  PROMOTED_ADMIN
+  INCOMING_CALL
+  MISSED_CALL
+
+  ORDER_NEW
+  ORDER_ACCEPTED
+  ORDER_REJECTED
+  ORDER_PREPARING
+  ORDER_READY
+  ORDER_ASSIGNED
+  ORDER_PICKED_UP
+  ORDER_ON_THE_WAY
+  ORDER_DELIVERED
+  ORDER_CANCELLED
+  DELIVERY_OFFER
+  PAYMENT_CONFIRMED
+  PAYMENT_FAILED
+  REVIEW_RECEIVED
+  PROMOTION
+  ACCOUNT_APPROVED
+  ACCOUNT_SUSPENDED
+  SYSTEM
+}
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  payload Json
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// Abonnement Web Push (PWA) — un par navigateur/appareil, LIÉ À LA SESSION qui
+// l'a créé : déconnexion, révocation ou expiration de la session = plus aucune
+// notification sur cet appareil (téléphones partagés).
+model PushSubscription {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   UserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  endpoint  String      @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("push_subscriptions")
+}
+
+// ===========================================================================
+// Modération & audit
+// ===========================================================================
+
+// Cible polymorphe (targetType + targetId, jamais une clé étrangère) : la cible
+// peut disparaître entre le signalement et son traitement.
+model Report {
+  id         String       @id @default(cuid())
+  targetType ReportTarget
+  targetId   String
+
+  reporterId String
+  reporter   User   @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reason     String @db.VarChar(500)
+
+  status ReportStatus @default(PENDING)
+
+  resolvedById String?
+  resolvedBy   User?     @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@map("reports")
+}
+
+enum ReportTarget {
+  MESSAGE
+  USER
+  ORDER
+  REVIEW
+  RESTAURANT
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+// Journal des actions sensibles (approbation, suspension, changement de
+// statut forcé, accès admin à une conversation...).
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_logs")
+}

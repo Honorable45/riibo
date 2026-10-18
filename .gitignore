@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.next/
+coverage/
+*.log
+
+# Secrets et données locales — jamais commités
+.env
+.env.*
+!.env.example
+.pgdata/
+uploads/
+uploads-test/
+
+# Identifiants de services tiers — jamais commités
+firebase*.json
+*service-account*.json
+*-adminsdk-*.json
+
+# Mobile Flutter — configuration Firebase et sorties de build
+google-services.json
+GoogleService-Info.plist
+mobile/**/build/
+mobile/**/.dart_tool/
+mobile/apps/*/android/local.properties
+mobile/apps/*/android/.gradle/

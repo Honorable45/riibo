@@ -1,0 +1,72 @@
+# Blueprint Render : API Riiberaka (NestJS, sans Docker) + Redis managé.
+# La base PostgreSQL est chez Neon (DATABASE_URL / DIRECT_URL à renseigner à la main).
+# Les variables « sync: false » sont demandées dans le tableau de bord à la création.
+services:
+  - type: web
+    name: riiberaka-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    rootDir: .
+    # --include=dev : NODE_ENV=production exclurait sinon nest/prisma (outils de build et de migration).
+    buildCommand: npm ci --include=dev && npm run build -w backend
+    preDeployCommand: npm run prisma:deploy -w backend
+    startCommand: npm run start:prod -w backend
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY_HOPS
+        value: 2
+      - key: DATABASE_URL        # Neon, hôte AVEC -pooler
+        sync: false
+      - key: DIRECT_URL          # Neon, hôte SANS -pooler (migrations)
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: riiberaka-redis
+          property: connectionString
+      - key: CORS_ORIGIN         # origines HTTPS des 4 PWA, séparées par des virgules
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CALL_ACTION_JWT_SECRET
+        generateValue: true
+      # Tous les médias (images, vocaux, pièces privées) vont sur Cloudinary : aucun disque à conserver.
+      - key: STORAGE_DRIVER
+        value: local
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: SMS_PROVIDER
+        value: zavu
+      - key: ZAVUDEV_API_KEY
+        sync: false
+      - key: ZAVU_SENDER
+        sync: false
+      - key: REGISTRATION_OTP_ENABLED
+        value: "true"
+      - key: MAIL_PROVIDER
+        value: none
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:contact@riiberaka.com
+
+  - type: keyvalue
+    name: riiberaka-redis
+    plan: starter
+    region: frankfurt
+    maxmemoryPolicy: noeviction
+    ipAllowList: []   # accès interne Render uniquement

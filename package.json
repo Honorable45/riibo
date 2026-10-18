@@ -1,0 +1,29 @@
+{
+  "name": "riiberaka",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Riiberaka — plateforme de commande de repas (backend NestJS + PWA client, restaurant, livreur + backoffice admin)",
+  "engines": { "node": ">=22" },
+  "workspaces": [
+    "backend",
+    "client",
+    "restaurant",
+    "livreur",
+    "admin"
+  ],
+  "scripts": {
+    "dev:backend": "npm run start:dev -w backend",
+    "build:backend": "npm run build -w backend",
+    "test:backend": "npm test -w backend",
+    "dev:client": "npm run dev -w client",
+    "build:client": "npm run build -w client",
+    "dev:restaurant": "npm run dev -w restaurant",
+    "build:restaurant": "npm run build -w restaurant",
+    "dev:livreur": "npm run dev -w livreur",
+    "build:livreur": "npm run build -w livreur",
+    "typecheck:livreur": "npm run typecheck -w livreur",
+    "dev:admin": "npm run dev -w admin",
+    "build:admin": "npm run build -w admin",
+    "typecheck:admin": "npm run typecheck -w admin"
+  }
+}

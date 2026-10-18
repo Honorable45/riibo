@@ -1,0 +1,99 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { throttleTracker } from './common/throttle-tracker';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { AdminModule } from './admin/admin.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { RedisModule } from './redis/redis.module';
+import { AuditModule } from './audit/audit.module';
+import { AddressesModule } from './addresses/addresses.module';
+import { FavoritesModule } from './favorites/favorites.module';
+import { PromosModule } from './promos/promos.module';
+import { ReviewsModule } from './reviews/reviews.module';
+import { CartsModule } from './carts/carts.module';
+import { MenuModule } from './menu/menu.module';
+import { DeliveriesModule } from './deliveries/deliveries.module';
+import { OrdersModule } from './orders/orders.module';
+import { RestaurantsModule } from './restaurants/restaurants.module';
+import { ReportsModule } from './reports/reports.module';
+import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
+import { ProfilesModule } from './profiles/profiles.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
+import { CallsModule } from './calls/calls.module';
+import { ConversationsModule } from './conversations/conversations.module';
+import { MessagesModule } from './messages/messages.module';
+import { VoiceModule } from './voice/voice.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { PresenceModule } from './presence/presence.module';
+import { UploadsModule } from './uploads/uploads.module';
+import { PushModule } from './push/push.module';
+import { WebsocketModule } from './websocket/websocket.module';
+
+@Module({
+  imports: [
+    // envFilePath en dur sur '.env' laissait fuiter les vraies clés (ex.
+    // Cloudinary) dans les tests e2e : jest charge bien `.env.test` via
+    // DOTENV_CONFIG_PATH (voir test/jest-e2e.json) AVANT que Nest ne
+    // démarre, mais ConfigModule rechargeait ensuite '.env' par-dessus —
+    // dotenv ne réécrit jamais une variable déjà définie, mais toute
+    // variable ABSENTE de .env.test (Cloudinary, jamais nécessaire en test)
+    // se retrouvait quand même définie depuis '.env' (bug réel constaté :
+    // CloudinaryProvider se croyait configuré pendant les tests e2e,
+    // provoquant un vrai appel Cloudinary avec une image de test factice).
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: process.env.DOTENV_CONFIG_PATH ?? '.env',
+    }),
+    // Limite globale par défaut (section 23) — les endpoints sensibles
+    // (auth) ont leur propre limite plus stricte via @Throttle(). Ne
+    // s'applique qu'aux routes HTTP : les connexions WebSocket ne sont pas
+    // couvertes par ce guard (limite connue, notée dans PHASES.md).
+    // `skipIf` n'est activé que par .env.test (jamais .env/.env.example) :
+    // désactive complètement le rate limiting — y compris les limites par
+    // route via @Throttle() — pendant les tests e2e, sans quoi une suite un
+    // peu généreuse en inscriptions/connexions déclencherait de faux échecs
+    // sans rapport avec ce qui est testé. overrideProvider(APP_GUARD) ne
+    // suffit pas ici : Nest ne réévalue pas les enhancers globaux déjà
+    // collectés au bootstrap dans un module de test (vérifié en pratique).
+    ThrottlerModule.forRoot({
+      throttlers: [{ ttl: 60_000, limit: 120, getTracker: throttleTracker }],
+      skipIf: () => process.env.DISABLE_RATE_LIMITING === 'true',
+    }),
+    ScheduleModule.forRoot(),
+    PrismaModule,
+    RedisModule,
+    AuditModule,
+    AuthModule,
+    UsersModule,
+    ProfilesModule,
+    ConversationsModule,
+    MessagesModule,
+    CallsModule,
+    VoiceModule,
+    NotificationsModule,
+    PresenceModule,
+    UploadsModule,
+    PushModule,
+    WebsocketModule,
+    MaintenanceModule,
+    RestaurantsModule,
+    MenuModule,
+    AddressesModule,
+    FavoritesModule,
+    PromosModule,
+    ReviewsModule,
+    CartsModule,
+    OrdersModule,
+    DeliveriesModule,
+    ReportsModule,
+    AdminModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+})
+export class AppModule {}

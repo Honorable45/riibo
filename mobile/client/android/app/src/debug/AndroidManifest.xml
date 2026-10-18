@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- INTERNET : outillage Flutter (hot reload, débogueur). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- HTTP en clair autorisé UNIQUEMENT en debug, pour joindre un backend
+         local (http://10.0.2.2:4000 depuis l'émulateur, IP du poste depuis un
+         téléphone). Les builds release n'acceptent que HTTPS. -->
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+</manifest>

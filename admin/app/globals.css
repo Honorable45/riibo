@@ -1,0 +1,156 @@
+@import 'tailwindcss';
+
+/* Charte Riiberaka (identique aux apps mobiles) : bleu de marque, encre marine,
+   neutres légèrement teintés de bleu. Toutes les couleurs passent par ces jetons. */
+:root {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #f8f9fc;
+  --ink: #0a1633;
+  --ink-2: #3a4560;
+  --muted: #6b7489;
+  --line: #e3e7ef;
+  --line-strong: #cfd5e1;
+  --brand: #0058f0;
+  --brand-ink: #ffffff;
+  --brand-soft: #e9f0ff;
+  --success: #12804a;
+  --success-soft: #e6f5ed;
+  --warning: #a35a00;
+  --warning-soft: #fff3e0;
+  --danger: #c4302b;
+  --danger-soft: #fdecea;
+  --info: #0b6e99;
+  --info-soft: #e5f4fa;
+  --focus: #0058f0;
+  --shadow: 0 1px 2px rgb(10 22 51 / 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0b1120;
+    --surface: #121a2c;
+    --surface-2: #172036;
+    --ink: #edf1f8;
+    --ink-2: #c3cad8;
+    --muted: #8e98ad;
+    --line: #232e45;
+    --line-strong: #2f3b56;
+    --brand: #6ea2ff;
+    --brand-ink: #071430;
+    --brand-soft: #172a4f;
+    --success: #4cc488;
+    --success-soft: #0f2d20;
+    --warning: #f1a94a;
+    --warning-soft: #33240c;
+    --danger: #ff7d76;
+    --danger-soft: #3a1717;
+    --info: #5cc3ea;
+    --info-soft: #0d2a38;
+    --focus: #6ea2ff;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0b1120;
+  --surface: #121a2c;
+  --surface-2: #172036;
+  --ink: #edf1f8;
+  --ink-2: #c3cad8;
+  --muted: #8e98ad;
+  --line: #232e45;
+  --line-strong: #2f3b56;
+  --brand: #6ea2ff;
+  --brand-ink: #071430;
+  --brand-soft: #172a4f;
+  --success: #4cc488;
+  --success-soft: #0f2d20;
+  --warning: #f1a94a;
+  --warning-soft: #33240c;
+  --danger: #ff7d76;
+  --danger-soft: #3a1717;
+  --info: #5cc3ea;
+  --info-soft: #0d2a38;
+  --focus: #6ea2ff;
+  --shadow: none;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: var(--font-nunito), 'Segoe UI', system-ui, sans-serif;
+  --shadow-card: var(--shadow);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Montants et compteurs alignés en colonne. */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--line) 25%, var(--surface-2) 50%, var(--line) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
