@@ -26,3 +26,7 @@ mobile/apps/*/android/local.properties
 mobile/apps/*/android/.gradle/
 mobile/apk/*.apk
 mobile/apk/*.aab
+
+# APK et bundles Android générés
+mobile/apk/*.apk
+mobile/apk/*.aab
