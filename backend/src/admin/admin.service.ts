@@ -256,7 +256,7 @@ export class AdminService {
       }
     }
 
-    return this.prisma.report.update({
+    const resolved = await this.prisma.report.update({
       where: { id: reportId },
       data: {
         status: dto.action === 'REMOVE_CONTENT' ? 'RESOLVED' : 'DISMISSED',
@@ -267,6 +267,14 @@ export class AdminService {
         reporter: { select: { id: true, username: true, firstName: true, lastName: true } },
       },
     });
+    await this.audit.log({
+      actorId: adminId,
+      action: dto.action === 'REMOVE_CONTENT' ? 'REPORT_CONTENT_REMOVED' : 'REPORT_DISMISSED',
+      targetType: 'REPORT',
+      targetId: reportId,
+      metadata: { targetType: report.targetType, targetId: report.targetId },
+    });
+    return resolved;
   }
 
   /** Aperçu au moment de la consultation — `null` si la cible a été supprimée entre-temps (voir Report, polymorphe par design). */
