@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../../app/config/env.dart';
 import '../../app/theme/app_theme.dart';
 
 /// Image distante (photos de plats, logos) : mise en cache disque, décodée à
@@ -31,7 +32,7 @@ class NetImage extends StatelessWidget {
     );
 
     Widget child;
-    final source = url;
+    final source = Env.mediaUrl(url);
     if (source == null || source.isEmpty) {
       child = fallback;
     } else {

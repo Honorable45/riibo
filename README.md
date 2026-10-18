@@ -51,3 +51,4 @@ $PGBIN/initdb -D .pgdata -U riiberaka --auth=trust -E UTF8
 $PGBIN/pg_ctl -D .pgdata -o "-p 5544 -c unix_socket_directories=/tmp" -l .pgdata/server.log start
 $PGBIN/createdb -h localhost -p 5544 -U riiberaka riiberaka
 ```
+# riibo

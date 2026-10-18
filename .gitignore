@@ -24,3 +24,5 @@ mobile/**/build/
 mobile/**/.dart_tool/
 mobile/apps/*/android/local.properties
 mobile/apps/*/android/.gradle/
+mobile/apk/*.apk
+mobile/apk/*.aab

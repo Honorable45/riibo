@@ -1,0 +1,220 @@
+{
+  "note": "Catalogue de DÉMONSTRATION (développement uniquement). Voir ATTRIBUTIONS.md.",
+  "images": [
+    {
+      "file": "poulet-braise.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Poulet_brais%C3%A9_frites.jpg",
+      "title": "Poulet braisé frites.jpg",
+      "author": "Zak Le Messager",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "demi-poulet.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Chicken_Alfaham.jpg",
+      "title": "Chicken Alfaham.jpg",
+      "author": "Joegoauk Goa",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "riz-sauce-tomate.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Riz_accompagn%C3%A9_de_la_sauce_de_tomate_et_de_la_viande_de_b%C5%93uf.jpg",
+      "title": "Riz accompagné de la sauce de tomate et de la viande de bœuf.jpg",
+      "author": "Leocyriaque",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "width": 720,
+      "height": 540,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "riz-au-poisson.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Riz,_poisson_brais%C3%A9_et_banane_frit.jpg",
+      "title": "Riz, poisson braisé et banane frit.jpg",
+      "author": "Maryleine",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "jus-de-gingembre.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Jus_de_gingembre-2025.jpg",
+      "title": "Jus de gingembre-2025.jpg",
+      "author": "Cheikh cherif",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "width": 810,
+      "height": 608,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "coca-cola.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:15-09-26-RalfR-WLC-0098_-_Coca-Cola_glass_bottle_(Germany).jpg",
+      "title": "15-09-26-RalfR-WLC-0098 - Coca-Cola glass bottle (Germany).jpg",
+      "author": "Ralf Roletschek",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Image entière centrée sur un fond flou issu de la même photo (format 4:3), recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "poulet-frit.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Fried-Chicken-Set.jpg",
+      "title": "Fried-Chicken-Set.jpg",
+      "author": "Evan-Amos",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "burger-poulet.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Fried_chicken_burger_.jpg",
+      "title": "Fried chicken burger .jpg",
+      "author": "Kurt Kaiser",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "fanta.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Fanta_200ml_China_02.jpg",
+      "title": "Fanta 200ml China 02.jpg",
+      "author": "Anna Frodesiak",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Image entière centrée sur un fond flou issu de la même photo (format 4:3), recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "pizza-margherita.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Pizza-napoletana.jpg",
+      "title": "Pizza-napoletana.jpg",
+      "author": "Fabryx98",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "pizza-4-fromages.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:%D0%98%D1%82%D0%B0%D0%BB%D0%B8%D1%8F_4_%D1%81%D1%8B%D1%80_%D0%BF%D0%B8%D1%86%D1%86%D0%B0%D1%81%D1%8B.jpg",
+      "title": "Италия 4 сыр пиццасы.jpg",
+      "author": "Aiyanakk",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "tiramisu.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Dessert_Tiramisu.jpg",
+      "title": "Dessert Tiramisu.jpg",
+      "author": "Javier Lastras",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "width": 1024,
+      "height": 768,
+      "modifications": "Recadrée au format 4:3, redimensionnée et recompressée (JPEG) ; métadonnées retirées."
+    },
+    {
+      "file": "eau-minerale.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Plastic_Water_Bottle.jpg",
+      "title": "Plastic Water Bottle.jpg",
+      "author": "Kykywinks",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "width": 1200,
+      "height": 900,
+      "modifications": "Image entière centrée sur un fond flou issu de la même photo (format 4:3), recompressée (JPEG) ; métadonnées retirées."
+    }
+  ],
+  "items": [
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Poulet braisé",
+      "file": "poulet-braise.jpg"
+    },
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Demi-poulet",
+      "file": "demi-poulet.jpg"
+    },
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Riz sauce tomate",
+      "file": "riz-sauce-tomate.jpg"
+    },
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Riz au poisson",
+      "file": "riz-au-poisson.jpg"
+    },
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Jus de gingembre",
+      "file": "jus-de-gingembre.jpg"
+    },
+    {
+      "restaurantSlug": "chez-maman",
+      "itemName": "Coca-Cola",
+      "file": "coca-cola.jpg"
+    },
+    {
+      "restaurantSlug": "le-roi-du-poulet",
+      "itemName": "Poulet frit 4 morceaux",
+      "file": "poulet-frit.jpg"
+    },
+    {
+      "restaurantSlug": "le-roi-du-poulet",
+      "itemName": "Poulet frit 8 morceaux",
+      "file": "poulet-frit.jpg"
+    },
+    {
+      "restaurantSlug": "le-roi-du-poulet",
+      "itemName": "Burger poulet",
+      "file": "burger-poulet.jpg"
+    },
+    {
+      "restaurantSlug": "le-roi-du-poulet",
+      "itemName": "Fanta",
+      "file": "fanta.jpg"
+    },
+    {
+      "restaurantSlug": "pizza-palace-tokoin",
+      "itemName": "Pizza Margherita",
+      "file": "pizza-margherita.jpg"
+    },
+    {
+      "restaurantSlug": "pizza-palace-tokoin",
+      "itemName": "Pizza 4 fromages",
+      "file": "pizza-4-fromages.jpg"
+    },
+    {
+      "restaurantSlug": "pizza-palace-tokoin",
+      "itemName": "Tiramisu",
+      "file": "tiramisu.jpg"
+    },
+    {
+      "restaurantSlug": "pizza-palace-tokoin",
+      "itemName": "Eau minérale",
+      "file": "eau-minerale.jpg"
+    }
+  ]
+}

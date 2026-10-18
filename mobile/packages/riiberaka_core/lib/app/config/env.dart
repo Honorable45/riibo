@@ -39,6 +39,19 @@ class Env {
   /// Racine REST (`/api/v1`, constante API_PREFIX du backend).
   static Uri get apiBase => apiOrigin.replace(path: '/api/v1');
 
+  /// Adresse affichable d'un média renvoyé par le backend : une URL absolue
+  /// (Cloudinary) est gardée telle quelle ; un chemin relatif
+  /// (`/api/v1/media/...`, stockage local) est résolu sur l'origine du backend.
+  static String? mediaUrl(String? raw) {
+    final value = raw?.trim();
+    if (value == null || value.isEmpty) return null;
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      return value;
+    }
+    if (value.startsWith('/')) return apiOrigin.resolve(value).toString();
+    return null;
+  }
+
   static Uri _parseOrigin(String raw) {
     final uri = Uri.tryParse(raw.trim());
     if (uri == null ||
