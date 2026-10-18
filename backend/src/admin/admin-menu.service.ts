@@ -135,7 +135,10 @@ export class AdminMenuService {
 
   /** Menu complet d'un restaurant, tel que le restaurant le gère. */
   async restaurantMenu(restaurantId: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({ where: { id: restaurantId }, select: { id: true } });
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { id: true },
+    });
     if (!restaurant) throw new NotFoundException('Restaurant introuvable.');
     const [categories, items] = await Promise.all([
       this.prisma.menuCategory.findMany({
@@ -151,33 +154,56 @@ export class AdminMenuService {
     ]);
     const dtos = items.map(toDto);
     return {
-      categories: categories.map((c) => ({ ...c, items: dtos.filter((i) => i.category?.id === c.id) })),
+      categories: categories.map((c) => ({
+        ...c,
+        items: dtos.filter((i) => i.category?.id === c.id),
+      })),
       uncategorized: dtos.filter((i) => !i.category),
     };
   }
 
-  async setAvailability(adminId: string, itemId: string, dto: AdminUpdateItemDto, ipAddress?: string) {
+  async setAvailability(
+    adminId: string,
+    itemId: string,
+    dto: AdminUpdateItemDto,
+    ipAddress?: string,
+  ) {
     const item = await this.requireItem(itemId);
-    await this.prisma.menuItem.update({ where: { id: itemId }, data: { isAvailable: dto.isAvailable } });
+    await this.prisma.menuItem.update({
+      where: { id: itemId },
+      data: { isAvailable: dto.isAvailable },
+    });
     await this.audit.log({
       actorId: adminId,
       action: dto.isAvailable ? 'MENU_ITEM_ENABLED_BY_ADMIN' : 'MENU_ITEM_DISABLED_BY_ADMIN',
       targetType: 'MENU_ITEM',
       targetId: itemId,
-      metadata: { restaurantId: item.restaurantId, before: item.isAvailable, after: dto.isAvailable, reason: dto.reason },
+      metadata: {
+        restaurantId: item.restaurantId,
+        before: item.isAvailable,
+        after: dto.isAvailable,
+        reason: dto.reason,
+      },
       ipAddress,
     });
     return this.getOne(itemId);
   }
 
-  async setImage(adminId: string, itemId: string, file: Express.Multer.File | undefined, ipAddress?: string) {
+  async setImage(
+    adminId: string,
+    itemId: string,
+    file: Express.Multer.File | undefined,
+    ipAddress?: string,
+  ) {
     const item = await this.requireItem(itemId);
     const imageUrl = await this.media.savePublicImage(file, 'menu');
     await this.prisma.menuItem.update({ where: { id: itemId }, data: { imageUrl } });
     await this.deleteIfUnused(item.imageUrl);
     await this.audit.log({
       actorId: adminId,
-      action: item.imageUrl ? 'MENU_ITEM_IMAGE_REPLACED_BY_ADMIN' : 'MENU_ITEM_IMAGE_ADDED_BY_ADMIN',
+      action: item.imageUrl
+        ? 'MENU_ITEM_IMAGE_REPLACED_BY_ADMIN'
+        : 'MENU_ITEM_IMAGE_ADDED_BY_ADMIN',
       targetType: 'MENU_ITEM',
       targetId: itemId,
       metadata: { restaurantId: item.restaurantId, before: item.imageUrl, after: imageUrl },
@@ -222,12 +248,19 @@ export class AdminMenuService {
   }
 
   private async summary(restaurantId?: string) {
-    const base: Prisma.MenuItemWhereInput = { deletedAt: null, ...(restaurantId ? { restaurantId } : {}) };
+    const base: Prisma.MenuItemWhereInput = {
+      deletedAt: null,
+      ...(restaurantId ? { restaurantId } : {}),
+    };
     const [total, noImage, unavailable, noDescription, soldOut] = await Promise.all([
       this.prisma.menuItem.count({ where: base }),
-      this.prisma.menuItem.count({ where: { ...base, OR: [{ imageUrl: null }, { imageUrl: '' }] } }),
+      this.prisma.menuItem.count({
+        where: { ...base, OR: [{ imageUrl: null }, { imageUrl: '' }] },
+      }),
       this.prisma.menuItem.count({ where: { ...base, isAvailable: false } }),
-      this.prisma.menuItem.count({ where: { ...base, OR: [{ description: null }, { description: '' }] } }),
+      this.prisma.menuItem.count({
+        where: { ...base, OR: [{ description: null }, { description: '' }] },
+      }),
       this.prisma.menuItem.count({ where: { ...base, stock: 0 } }),
     ]);
     return { total, noImage, unavailable, noDescription, soldOut };

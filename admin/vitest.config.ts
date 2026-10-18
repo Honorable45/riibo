@@ -4,6 +4,14 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [react()],
-  resolve: { alias: { '@': fileURLToPath(new URL('./', import.meta.url)) } },
-  test: { environment: 'jsdom', include: ['test/**/*.test.{ts,tsx}'] },
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./', import.meta.url)) },
+    // React vit dans admin/node_modules (workspace) : une seule copie.
+    dedupe: ['react', 'react-dom'],
+  },
+  test: {
+    environment: 'jsdom',
+    include: ['test/**/*.test.{ts,tsx}'],
+    server: { deps: { inline: ['@tanstack/react-query', '@testing-library/react'] } },
+  },
 });

@@ -52,3 +52,4 @@ $PGBIN/pg_ctl -D .pgdata -o "-p 5544 -c unix_socket_directories=/tmp" -l .pgdata
 $PGBIN/createdb -h localhost -p 5544 -U riiberaka riiberaka
 ```
 # riibo
+# riibo

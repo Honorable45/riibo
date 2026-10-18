@@ -111,7 +111,11 @@ export class AdminMenuController {
   }
 
   @Delete('menu-items/:id/image')
-  removeImage(@CurrentUser() admin: AuthenticatedUser, @Param('id') id: string, @Req() req: Request) {
+  removeImage(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('id') id: string,
+    @Req() req: Request,
+  ) {
     return this.menu.removeImage(admin.userId, id, req.ip);
   }
 

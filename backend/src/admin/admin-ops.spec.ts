@@ -9,8 +9,14 @@ import { AdminInsightsService } from './admin-insights.service';
 import { AdminMenuService } from './admin-menu.service';
 import { AdminOrdersService } from './admin-orders.service';
 
+type Where = { AND: Array<{ OR?: unknown[] } & Record<string, unknown>> };
+type FindUniqueArgs = { include: { delivery: { select: Record<string, unknown> } } };
+
 describe('AdminOrdersService', () => {
-  const prisma = { order: { findMany: jest.fn(), findUnique: jest.fn() }, auditLog: { findMany: jest.fn() } };
+  const prisma = {
+    order: { findMany: jest.fn(), findUnique: jest.fn() },
+    auditLog: { findMany: jest.fn() },
+  };
   const stateMachine = { apply: jest.fn() };
   const service = new AdminOrdersService(
     prisma as unknown as PrismaService,
@@ -22,9 +28,9 @@ describe('AdminOrdersService', () => {
   it('annule uniquement via la machine à états, en tant qu’ADMIN et avec le motif', async () => {
     stateMachine.apply.mockResolvedValue(undefined);
     prisma.order.findUnique.mockResolvedValue(null); // relecture : peu importe ici
-    await expect(service.cancel('admin-1', 'o1', 'Client injoignable', '1.2.3.4')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.cancel('admin-1', 'o1', 'Client injoignable', '1.2.3.4'),
+    ).rejects.toBeInstanceOf(NotFoundException);
     expect(stateMachine.apply).toHaveBeenCalledWith(
       'o1',
       'CANCEL',
@@ -42,22 +48,28 @@ describe('AdminOrdersService', () => {
       from: '2026-10-01T00:00:00.000Z',
       to: '2026-10-02T00:00:00.000Z',
     });
-    const { where } = prisma.order.findMany.mock.calls[0][0];
+    const { where } = (prisma.order.findMany.mock.calls[0] as [{ where: Where }])[0];
     expect(where.AND).toEqual(
       expect.arrayContaining([
         { status: { in: ['PENDING', 'ACCEPTED'] } },
         { delivery: { driverId: 'd1' } },
-        { createdAt: { gte: new Date('2026-10-01T00:00:00.000Z'), lt: new Date('2026-10-02T00:00:00.000Z') } },
+        {
+          createdAt: {
+            gte: new Date('2026-10-01T00:00:00.000Z'),
+            lt: new Date('2026-10-02T00:00:00.000Z'),
+          },
+        },
       ]),
     );
-    const search = where.AND.find((c: { OR?: unknown[] }) => c.OR);
-    expect(search.OR[0]).toEqual({ orderNumber: 42 });
+    const search = where.AND.find((c) => c.OR);
+    expect(search?.OR?.[0]).toEqual({ orderNumber: 42 });
   });
 
   it('ne renvoie jamais les codes de retrait / remise', async () => {
     prisma.order.findUnique.mockResolvedValue(null);
     await service.getOne('o1').catch(() => undefined);
-    const select = prisma.order.findUnique.mock.calls[0][0].include.delivery.select;
+    const select = (prisma.order.findUnique.mock.calls[0] as [FindUniqueArgs])[0].include.delivery
+      .select;
     expect(select.pickupCode).toBeUndefined();
     expect(select.deliveryCode).toBeUndefined();
   });
@@ -106,13 +118,21 @@ describe('AdminMenuService', () => {
   });
 
   it('retire un plat de la vente avec motif journalisé', async () => {
-    await service.setAvailability('admin-1', 'i1', { isAvailable: false, reason: 'Photo trompeuse' });
-    expect(prisma.menuItem.update).toHaveBeenCalledWith({ where: { id: 'i1' }, data: { isAvailable: false } });
+    await service.setAvailability('admin-1', 'i1', {
+      isAvailable: false,
+      reason: 'Photo trompeuse',
+    });
+    expect(prisma.menuItem.update).toHaveBeenCalledWith({
+      where: { id: 'i1' },
+      data: { isAvailable: false },
+    });
+    const metadata: unknown = expect.objectContaining({
+      before: true,
+      after: false,
+      reason: 'Photo trompeuse',
+    });
     expect(audit.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'MENU_ITEM_DISABLED_BY_ADMIN',
-        metadata: expect.objectContaining({ before: true, after: false, reason: 'Photo trompeuse' }),
-      }),
+      expect.objectContaining({ action: 'MENU_ITEM_DISABLED_BY_ADMIN', metadata }),
     );
   });
 
@@ -120,9 +140,14 @@ describe('AdminMenuService', () => {
     prisma.menuItem.count.mockResolvedValue(1);
     prisma.restaurant.count.mockResolvedValue(0);
     await service.removeImage('admin-1', 'i1');
-    expect(prisma.menuItem.update).toHaveBeenCalledWith({ where: { id: 'i1' }, data: { imageUrl: null } });
+    expect(prisma.menuItem.update).toHaveBeenCalledWith({
+      where: { id: 'i1' },
+      data: { imageUrl: null },
+    });
     expect(media.deleteByUrl).not.toHaveBeenCalled();
-    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'MENU_ITEM_IMAGE_REMOVED_BY_ADMIN' }));
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'MENU_ITEM_IMAGE_REMOVED_BY_ADMIN' }),
+    );
   });
 
   it('supprime le fichier quand plus rien ne l’utilise', async () => {
@@ -134,7 +159,10 @@ describe('AdminMenuService', () => {
 });
 
 describe('AdminInsightsService', () => {
-  const prisma = { driverProfile: { findUnique: jest.fn() }, delivery: { groupBy: jest.fn(), findFirst: jest.fn(), findMany: jest.fn() } };
+  const prisma = {
+    driverProfile: { findUnique: jest.fn() },
+    delivery: { groupBy: jest.fn(), findFirst: jest.fn(), findMany: jest.fn() },
+  };
   const locations = { get: jest.fn() };
   const cloudinary = { isConfigured: () => false };
   const service = new AdminInsightsService(
@@ -151,23 +179,33 @@ describe('AdminInsightsService', () => {
   });
 
   it('refuse une période inversée ou trop longue', async () => {
-    await expect(service.finance('2026-10-02T00:00:00Z', '2026-10-01T00:00:00Z')).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
-    await expect(service.finance('2024-01-01T00:00:00Z', '2026-01-01T00:00:00Z')).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(
+      service.finance('2026-10-02T00:00:00Z', '2026-10-01T00:00:00Z'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.finance('2024-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('n’affiche pas la position d’un livreur hors ligne', async () => {
-    prisma.driverProfile.findUnique.mockResolvedValue({ id: 'd1', isOnline: false, totalOffers: 0, acceptedOffers: 0 });
+    prisma.driverProfile.findUnique.mockResolvedValue({
+      id: 'd1',
+      isOnline: false,
+      totalOffers: 0,
+      acceptedOffers: 0,
+    });
     const result = await service.driverInsights('d1');
     expect(locations.get).not.toHaveBeenCalled();
     expect(result.position).toBeNull();
   });
 
   it('écarte une position trop ancienne même si le livreur est en ligne', async () => {
-    prisma.driverProfile.findUnique.mockResolvedValue({ id: 'd1', isOnline: true, totalOffers: 4, acceptedOffers: 3 });
+    prisma.driverProfile.findUnique.mockResolvedValue({
+      id: 'd1',
+      isOnline: true,
+      totalOffers: 4,
+      acceptedOffers: 3,
+    });
     locations.get.mockResolvedValue({ latitude: 6.1, longitude: 1.2, at: Date.now() - 5 * 60_000 });
     const result = await service.driverInsights('d1');
     expect(result.position).toBeNull();

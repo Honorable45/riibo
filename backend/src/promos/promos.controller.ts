@@ -25,7 +25,11 @@ export class AdminPromosController {
   }
 
   @Post()
-  async create(@CurrentUser() admin: AuthenticatedUser, @Body() dto: CreatePromoDto, @Req() req: Request) {
+  async create(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Body() dto: CreatePromoDto,
+    @Req() req: Request,
+  ) {
     const promo = await this.promos.create(dto);
     await this.audit.log({
       actorId: admin.userId,

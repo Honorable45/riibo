@@ -67,7 +67,9 @@ export class AdminOrdersService {
         delivery: delivery
           ? {
               status: delivery.status,
-              driver: delivery.driver ? { id: delivery.driver.id, ...personOf(delivery.driver.user) } : null,
+              driver: delivery.driver
+                ? { id: delivery.driver.id, ...personOf(delivery.driver.user) }
+                : null,
             }
           : null,
       })),
@@ -79,7 +81,16 @@ export class AdminOrdersService {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
-        client: { select: { id: true, firstName: true, lastName: true, phone: true, email: true, isActive: true } },
+        client: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            email: true,
+            isActive: true,
+          },
+        },
         restaurant: { select: { id: true, name: true, slug: true, phone: true, address: true } },
         items: { orderBy: { id: 'asc' } },
         payments: {
@@ -154,7 +165,12 @@ export class AdminOrdersService {
 
   /** Annulation exceptionnelle : règles, motif et journal imposés par la machine à états. */
   async cancel(adminId: string, orderId: string, reason: string, ipAddress?: string) {
-    await this.stateMachine.apply(orderId, 'CANCEL', { kind: 'ADMIN', userId: adminId }, { reason, ipAddress });
+    await this.stateMachine.apply(
+      orderId,
+      'CANCEL',
+      { kind: 'ADMIN', userId: adminId },
+      { reason, ipAddress },
+    );
     return this.getOne(orderId);
   }
 
@@ -235,7 +251,8 @@ function buildTimeline(
   push(delivery?.arrivedAt, 'Livreur arrivé chez le client');
   push(order.deliveredAt, order.deliveryType === 'PICKUP' ? 'Remise au client' : 'Livrée');
   // Le refus n'a pas d'horodatage dédié : la dernière mise à jour est la plus proche.
-  if (order.status === 'REJECTED') push(order.updatedAt, 'Refusée par le restaurant', order.rejectionReason);
+  if (order.status === 'REJECTED')
+    push(order.updatedAt, 'Refusée par le restaurant', order.rejectionReason);
   const adminCancel = audit.some((a) => a.action === 'ORDER_CANCELLED_BY_ADMIN');
   if (!adminCancel) push(order.cancelledAt, 'Annulée', order.cancelReason);
   for (const log of audit) {

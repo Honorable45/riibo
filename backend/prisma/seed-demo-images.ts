@@ -35,7 +35,9 @@ async function main() {
     console.log('SEED_DEMO=true requis : rien n’a été modifié.');
     return;
   }
-  const manifest = JSON.parse(await readFile(join(IMAGES_DIR, 'manifest.json'), 'utf8')) as Manifest;
+  const manifest = JSON.parse(
+    await readFile(join(IMAGES_DIR, 'manifest.json'), 'utf8'),
+  ) as Manifest;
   const target = join(resolve(process.env.STORAGE_LOCAL_PATH ?? './uploads'), 'public', 'menu');
   await mkdir(target, { recursive: true });
 
@@ -49,7 +51,11 @@ async function main() {
     for (const entry of manifest.items) {
       if (!DEMO_SLUGS.includes(entry.restaurantSlug)) continue;
       const item = await prisma.menuItem.findFirst({
-        where: { name: entry.itemName, deletedAt: null, restaurant: { slug: entry.restaurantSlug } },
+        where: {
+          name: entry.itemName,
+          deletedAt: null,
+          restaurant: { slug: entry.restaurantSlug },
+        },
         select: { id: true, imageUrl: true },
       });
       if (!item) {
@@ -69,13 +75,18 @@ async function main() {
         copied.set(entry.file, url);
       }
       // Conditionnel : n'écrase pas une image posée entre-temps.
-      const updated = await prisma.menuItem.updateMany({ where: { id: item.id, imageUrl: null }, data: { imageUrl: url } });
+      const updated = await prisma.menuItem.updateMany({
+        where: { id: item.id, imageUrl: null },
+        data: { imageUrl: url },
+      });
       set += updated.count;
     }
   } finally {
     await prisma.$disconnect();
   }
-  console.log(`Images de démonstration : ${set} plat(s) illustré(s), ${kept} image(s) existante(s) conservée(s), ${missing} plat(s) introuvable(s).`);
+  console.log(
+    `Images de démonstration : ${set} plat(s) illustré(s), ${kept} image(s) existante(s) conservée(s), ${missing} plat(s) introuvable(s).`,
+  );
 }
 
 main().catch((error: unknown) => {

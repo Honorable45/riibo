@@ -21,7 +21,11 @@ const toBoolean = ({ value }: { value: unknown }) =>
 
 /** `?status=A,B` ou `?status=A&status=B` → tableau. */
 const toList = ({ value }: { value: unknown }) =>
-  Array.isArray(value) ? value : typeof value === 'string' ? value.split(',').filter(Boolean) : value;
+  Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',').filter(Boolean)
+      : value;
 
 class CursorQueryDto {
   @ApiPropertyOptional()
@@ -115,7 +119,13 @@ export class ListPaymentsQueryDto extends PeriodQueryDto {
   method?: PaymentMethod;
 }
 
-export const ITEM_ISSUES = ['NO_IMAGE', 'NO_DESCRIPTION', 'NO_CATEGORY', 'UNAVAILABLE', 'SOLD_OUT'] as const;
+export const ITEM_ISSUES = [
+  'NO_IMAGE',
+  'NO_DESCRIPTION',
+  'NO_CATEGORY',
+  'UNAVAILABLE',
+  'SOLD_OUT',
+] as const;
 export type ItemIssue = (typeof ITEM_ISSUES)[number];
 
 export class ListAdminItemsQueryDto extends CursorQueryDto {

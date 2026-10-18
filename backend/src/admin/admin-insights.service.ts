@@ -11,7 +11,15 @@ const DEFAULT_PAGE_SIZE = 30;
 const MAX_PERIOD_DAYS = 366;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const IN_PROGRESS: OrderStatus[] = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'ASSIGNED', 'PICKED_UP', 'ON_THE_WAY'];
+const IN_PROGRESS: OrderStatus[] = [
+  'PENDING',
+  'ACCEPTED',
+  'PREPARING',
+  'READY',
+  'ASSIGNED',
+  'PICKED_UP',
+  'ON_THE_WAY',
+];
 
 /**
  * Indicateurs du backoffice, tous calculés côté serveur à partir des modèles
@@ -45,7 +53,9 @@ export class AdminInsightsService {
         _count: { _all: true },
         _sum: { amount: true },
       }),
-      this.prisma.$queryRaw<Array<{ day: Date; orders: bigint; delivered: bigint; value: bigint | null }>>`
+      this.prisma.$queryRaw<
+        Array<{ day: Date; orders: bigint; delivered: bigint; value: bigint | null }>
+      >`
         SELECT date_trunc('day', "createdAt") AS day,
                count(*) AS orders,
                count(*) FILTER (WHERE status = 'DELIVERED') AS delivered,
@@ -66,7 +76,11 @@ export class AdminInsightsService {
     // Paiements restés « en attente » sur des commandes annulées ou refusées :
     // l'argent ne sera jamais encaissé (rien ne clôt ces paiements aujourd'hui).
     const stale = await this.prisma.payment.aggregate({
-      where: { ...created, status: 'PENDING', order: { status: { in: ['CANCELLED', 'REJECTED'] } } },
+      where: {
+        ...created,
+        status: 'PENDING',
+        order: { status: { in: ['CANCELLED', 'REJECTED'] } },
+      },
       _count: { _all: true },
       _sum: { amount: true },
     });
@@ -116,7 +130,9 @@ export class AdminInsightsService {
         discounts,
         mealsAfterDiscount: meals - discounts,
         deliveryFees: delivered._sum.deliveryFee ?? 0,
-        averageOrder: delivered._count._all ? Math.round((delivered._sum.total ?? 0) / delivered._count._all) : 0,
+        averageOrder: delivered._count._all
+          ? Math.round((delivered._sum.total ?? 0) / delivered._count._all)
+          : 0,
       },
       payments: {
         paid: sumPayments('PAID'),
@@ -194,11 +210,18 @@ export class AdminInsightsService {
   }
 
   async restaurantInsights(restaurantId: string) {
-    const exists = await this.prisma.restaurant.findUnique({ where: { id: restaurantId }, select: { id: true } });
+    const exists = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { id: true },
+    });
     if (!exists) throw new NotFoundException('Restaurant introuvable.');
     const since = new Date(Date.now() - 30 * DAY_MS);
     const [byStatus, delivered30, items, recent] = await Promise.all([
-      this.prisma.order.groupBy({ by: ['status'], where: { restaurantId }, _count: { _all: true } }),
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where: { restaurantId },
+        _count: { _all: true },
+      }),
       this.prisma.order.aggregate({
         where: { restaurantId, status: 'DELIVERED', createdAt: { gte: since } },
         _count: { _all: true },
@@ -213,14 +236,24 @@ export class AdminInsightsService {
         where: { restaurantId },
         orderBy: { createdAt: 'desc' },
         take: 8,
-        select: { id: true, orderNumber: true, status: true, total: true, createdAt: true, deliveryType: true },
+        select: {
+          id: true,
+          orderNumber: true,
+          status: true,
+          total: true,
+          createdAt: true,
+          deliveryType: true,
+        },
       }),
     ]);
     const total = byStatus.reduce((s, r) => s + r._count._all, 0);
     const of = (s: OrderStatus) => byStatus.find((r) => r.status === s)?._count._all ?? 0;
     const finished = of('DELIVERED') + of('REJECTED') + of('CANCELLED');
     return {
-      orders: { total, byStatus: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])) },
+      orders: {
+        total,
+        byStatus: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])),
+      },
       // Part des commandes terminées qui ont été refusées par le restaurant.
       rejectionRate: finished ? of('REJECTED') / finished : null,
       last30Days: {
@@ -244,12 +277,17 @@ export class AdminInsightsService {
     const [byStatus, current, recent, position] = await Promise.all([
       this.prisma.delivery.groupBy({ by: ['status'], where: { driverId }, _count: { _all: true } }),
       this.prisma.delivery.findFirst({
-        where: { driverId, status: { in: ['ASSIGNED', 'AT_RESTAURANT', 'PICKED_UP', 'ON_THE_WAY', 'ARRIVED'] } },
+        where: {
+          driverId,
+          status: { in: ['ASSIGNED', 'AT_RESTAURANT', 'PICKED_UP', 'ON_THE_WAY', 'ARRIVED'] },
+        },
         select: {
           id: true,
           status: true,
           assignedAt: true,
-          order: { select: { id: true, orderNumber: true, restaurant: { select: { name: true } } } },
+          order: {
+            select: { id: true, orderNumber: true, restaurant: { select: { name: true } } },
+          },
         },
       }),
       this.prisma.delivery.findMany({
@@ -262,7 +300,9 @@ export class AdminInsightsService {
           deliveryFee: true,
           deliveredAt: true,
           createdAt: true,
-          order: { select: { id: true, orderNumber: true, restaurant: { select: { name: true } } } },
+          order: {
+            select: { id: true, orderNumber: true, restaurant: { select: { name: true } } },
+          },
         },
       }),
       // Position : uniquement si le livreur est en ligne ET la mesure récente
@@ -276,7 +316,11 @@ export class AdminInsightsService {
       current,
       recent,
       position: fresh
-        ? { latitude: fresh.latitude, longitude: fresh.longitude, at: new Date(fresh.at).toISOString() }
+        ? {
+            latitude: fresh.latitude,
+            longitude: fresh.longitude,
+            at: new Date(fresh.at).toISOString(),
+          }
         : null,
       positionTtlSeconds: LOCATION_TTL_MS / 1000,
     };
@@ -297,7 +341,9 @@ export class AdminInsightsService {
         createdAt: true,
         lastSeenAt: true,
         driverProfile: { select: { id: true, status: true } },
-        restaurantMemberships: { select: { role: true, restaurant: { select: { id: true, name: true, status: true } } } },
+        restaurantMemberships: {
+          select: { role: true, restaurant: { select: { id: true, name: true, status: true } } },
+        },
         _count: { select: { addresses: true, favorites: true } },
       },
     });
@@ -316,8 +362,15 @@ export class AdminInsightsService {
           restaurant: { select: { id: true, name: true } },
         },
       }),
-      this.prisma.order.groupBy({ by: ['status'], where: { clientId: userId }, _count: { _all: true } }),
-      this.prisma.order.aggregate({ where: { clientId: userId, status: 'DELIVERED' }, _sum: { total: true } }),
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where: { clientId: userId },
+        _count: { _all: true },
+      }),
+      this.prisma.order.aggregate({
+        where: { clientId: userId, status: 'DELIVERED' },
+        _sum: { total: true },
+      }),
       this.prisma.report.count({ where: { targetType: 'USER', targetId: userId } }),
     ]);
     const { _count, ...rest } = user;
@@ -381,11 +434,20 @@ export class AdminInsightsService {
         provider: env.PAYMENT_PROVIDER ?? 'cash',
         methods: { CASH_ON_DELIVERY: true, TMONEY: false, FLOOZ: false },
       },
-      sms: { provider: env.SMS_PROVIDER ?? 'none', configured: (env.SMS_PROVIDER ?? 'none') !== 'none' },
+      sms: {
+        provider: env.SMS_PROVIDER ?? 'none',
+        configured: (env.SMS_PROVIDER ?? 'none') !== 'none',
+      },
       registrationOtp: env.REGISTRATION_OTP_ENABLED === 'true',
       mail: { provider: env.MAIL_PROVIDER ?? 'none' },
-      media: { cloudinary: this.cloudinary.isConfigured(), storage: this.cloudinary.isConfigured() ? 'cloudinary' : 'local' },
-      push: { webPush: has('VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY'), fcm: has('FIREBASE_SERVICE_ACCOUNT') },
+      media: {
+        cloudinary: this.cloudinary.isConfigured(),
+        storage: this.cloudinary.isConfigured() ? 'cloudinary' : 'local',
+      },
+      push: {
+        webPush: has('VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY'),
+        fcm: has('FIREBASE_SERVICE_ACCOUNT'),
+      },
       realtime: { redis: has('REDIS_URL') },
       calls: { turn: has('TURN_URLS') },
       commission: { configured: false },
