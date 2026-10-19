@@ -95,3 +95,19 @@ son mot de passe n'est pas dans le dépôt.
 ## 3. Avancement
 
 _Mis à jour à la fin de chaque phase (voir plus bas)._
+
+## 9. Ajouts du 2026-10-18/19 (site vitrine)
+
+- Page **Candidatures** (`/candidatures`) : demandes envoyées depuis le
+  formulaire du site, filtrées par état (nouvelle, contactée, inscrite, sans
+  suite), note interne ; chaque changement est journalisé
+  (`PARTNER_REQUEST_UPDATED`). Backend : `GET/PATCH /admin/partner-requests`.
+- Tests de composants : la configuration Vitest épingle désormais une seule
+  instance de React (deux copies identiques coexistaient dans l’espace de
+  travail npm et faisaient échouer les tests). Les copies imbriquées obsolètes
+  de `admin/node_modules`, absentes du lockfile, ont été retirées.
+- `test/admin.e2e-spec.ts` réaligné sur la règle « motif obligatoire pour
+  suspendre » (la version committée était l’ancienne).
+- Dernière vérification : lint 0, typage 0, tests **21/21**, build ✅,
+  7 pages ouvertes après connexion réelle (ordinateur et téléphone) sans
+  erreur.

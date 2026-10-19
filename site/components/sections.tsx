@@ -37,6 +37,9 @@ export function Dishes({ dishes }: { dishes: PublicDish[] | null }) {
                 <div className="relative aspect-[4/3] overflow-hidden rounded-[1.75rem] bg-cream-deep">
                   <Image
                     src={mediaSrc(d.imageUrl)!}
+                    // Stockage local de développement (http://localhost) : refusé par
+                    // l'optimiseur en production, servi tel quel. Cloudinary (https) est optimisé.
+                    unoptimized={!mediaSrc(d.imageUrl)!.startsWith('https://')}
                     alt={d.name}
                     fill
                     sizes="(min-width: 1024px) 18rem, (min-width: 420px) 45vw, 90vw"

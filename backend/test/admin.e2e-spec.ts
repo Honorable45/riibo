@@ -86,16 +86,61 @@ describe('Admin (e2e)', () => {
     it('PATCH /api/admin/users/:id désactive un compte, qui ne peut plus se reconnecter ensuite', async () => {
       const target = await registerTestUser(app, { username: 'to_deactivate' });
 
+      // Une suspension exige un motif, conservé dans le journal d'audit.
       await request(app.getHttpServer())
         .patch(`/api/v1/admin/users/${target.id}`)
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ isActive: false })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/admin/users/${target.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ isActive: false, reason: 'Fraude constatée' })
         .expect(200);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { action: 'USER_SUSPENDED', targetId: target.id, actorId: admin.id },
+      });
+      expect(log?.metadata).toMatchObject({ reason: 'Fraude constatée' });
 
       await request(app.getHttpServer())
         .post('/api/v1/auth/login')
         .send({ identifier: target.username, password: 'un-mot-de-passe-solide' })
         .expect(401);
+    });
+
+    it('un admin ne peut ni se suspendre ni suspendre un autre admin', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/admin/users/${admin.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ isActive: false, reason: 'Essai' })
+        .expect(403);
+
+      const other = await registerTestUser(app, { username: 'other_admin' });
+      await prisma.user.update({ where: { id: other.id }, data: { role: 'ADMIN' } });
+      await request(app.getHttpServer())
+        .patch(`/api/v1/admin/users/${other.id}`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ isActive: false, reason: 'Essai' })
+        .expect(403);
+    });
+
+    it('les routes admin ajoutées refusent un utilisateur ordinaire', async () => {
+      for (const path of [
+        '/api/v1/admin/orders',
+        '/api/v1/admin/menu-items',
+        '/api/v1/admin/payments',
+        '/api/v1/admin/audit-logs',
+        '/api/v1/admin/config',
+        '/api/v1/admin/finance?from=2026-10-01T00:00:00Z&to=2026-10-02T00:00:00Z',
+      ]) {
+        await request(app.getHttpServer())
+          .get(path)
+          .set('Authorization', `Bearer ${regular.accessToken}`)
+          .expect(403);
+        await request(app.getHttpServer()).get(path).expect(401);
+      }
     });
   });
 
