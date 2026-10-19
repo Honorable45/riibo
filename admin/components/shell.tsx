@@ -5,6 +5,7 @@ import {
   Bike,
   ClipboardList,
   Flag,
+  Handshake,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -45,6 +46,7 @@ const NAV: Array<{ title: string; items: Array<{ href: string; label: string; ic
   {
     title: 'Opérations',
     items: [
+      { href: '/candidatures', label: 'Candidatures', icon: Handshake },
       { href: '/promotions', label: 'Promotions', icon: Tag },
       { href: '/signalements', label: 'Signalements', icon: Flag, badge: 'reports' },
       { href: '/journal', label: 'Journal d’audit', icon: ScrollText },

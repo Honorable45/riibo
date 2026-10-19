@@ -1335,3 +1335,35 @@ model AuditLog {
   @@index([targetType, targetId])
   @@map("audit_logs")
 }
+
+// Demande d'un restaurant souhaitant rejoindre Riiberaka (formulaire public du
+// site vitrine). Simple prise de contact : aucun compte n'est créé ; l'équipe
+// rappelle le restaurant puis l'accompagne dans l'inscription.
+enum PartnerRequestStatus {
+  NEW
+  CONTACTED
+  ONBOARDED
+  DECLINED
+}
+
+model PartnerRequest {
+  id             String               @id @default(cuid())
+  restaurantName String               @db.VarChar(120)
+  contactName    String               @db.VarChar(80)
+  // Format international (+228XXXXXXXX), normalisé par le serveur.
+  phone          String               @db.VarChar(20)
+  area           String               @db.VarChar(120)
+  cuisine        String?              @db.VarChar(80)
+  message        String?              @db.VarChar(1000)
+  status         PartnerRequestStatus @default(NEW)
+  // Note interne de l'équipe (jamais renvoyée au demandeur).
+  internalNote   String?              @db.VarChar(500)
+  handledById    String?
+  handledAt      DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([status, createdAt])
+  @@index([phone])
+  @@map("partner_requests")
+}

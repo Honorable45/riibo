@@ -1,0 +1,171 @@
+@import 'tailwindcss';
+
+/*
+ * Riiberaka — direction artistique de la vitrine.
+ * Point de départ : la charte des applications (bleu #0058F0, encre marine,
+ * Nunito Sans) et sa règle « la photo des plats apporte la chaleur ». On y
+ * ajoute un fond crème, un seul accent chaud (piment) et un titrage plus
+ * expressif. Le motif de marque : les trois traits de vitesse du logo.
+ */
+:root {
+  --cream: #faf5ec;
+  --cream-deep: #f2e9da;
+  --paper: #ffffff;
+  --ink: #0a1633;
+  --ink-2: #39435a;
+  --muted: #62656f;
+  --line: #e7dece;
+  --brand: #0058f0;
+  --brand-deep: #0042b8;
+  --brand-soft: #e6eeff;
+  --chili: #b93c12;
+  --chili-soft: #fbe7dd;
+  --success: #14804a;
+  --danger: #b42318;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-cream: var(--cream);
+  --color-cream-deep: var(--cream-deep);
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-deep: var(--brand-deep);
+  --color-brand-soft: var(--brand-soft);
+  --color-chili: var(--chili);
+  --color-chili-soft: var(--chili-soft);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-body), 'Segoe UI', system-ui, sans-serif;
+  --font-display: var(--font-display-face), var(--font-body), system-ui, sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+body {
+  background: var(--cream);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* Marges latérales qui respectent les zones de sécurité des téléphones. */
+.gutter {
+  padding-left: max(1.25rem, env(safe-area-inset-left, 0px));
+  padding-right: max(1.25rem, env(safe-area-inset-right, 0px));
+}
+@media (min-width: 768px) {
+  .gutter {
+    padding-left: max(2.5rem, env(safe-area-inset-left, 0px));
+    padding-right: max(2.5rem, env(safe-area-inset-right, 0px));
+  }
+}
+
+/* Traits de vitesse du logo : élément graphique de la marque. */
+.speed-lines {
+  display: grid;
+  gap: 0.45em;
+}
+.speed-lines > span {
+  display: block;
+  height: 0.55em;
+  border-radius: 999px;
+  background: var(--brand);
+}
+
+/* Apparition au défilement, en CSS pur (animations pilotées par le défilement).
+   Sans prise en charge, ou avec « réduire les animations », le contenu est
+   simplement affiché : rien ne dépend de JavaScript. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    @keyframes reveal {
+      from {
+        opacity: 0;
+        transform: translateY(28px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    [data-reveal] {
+      animation: reveal linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 40%;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(24px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes slide-in {
+    from {
+      transform: translateX(-40%);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+  .anim-rise {
+    animation: rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    animation-delay: var(--delay, 0ms);
+  }
+  .anim-lines > span {
+    animation: slide-in 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .anim-lines > span:nth-child(2) {
+    animation-delay: 120ms;
+  }
+  .anim-lines > span:nth-child(3) {
+    animation-delay: 240ms;
+  }
+}
+
+/* Champ piège du formulaire : invisible et hors de portée du clavier. */
+.trap {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}

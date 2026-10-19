@@ -15,6 +15,7 @@ const FAMILIES = [
   { key: 'USER_', label: 'Comptes' },
   { key: 'MENU_ITEM_', label: 'Plats' },
   { key: 'PROMO_', label: 'Promotions' },
+  { key: 'PARTNER_', label: 'Candidatures' },
   { key: 'REPORT_', label: 'Signalements' },
 ];
 

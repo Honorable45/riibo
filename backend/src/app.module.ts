@@ -12,6 +12,7 @@ import { RedisModule } from './redis/redis.module';
 import { AuditModule } from './audit/audit.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { FavoritesModule } from './favorites/favorites.module';
+import { PartnersModule } from './partners/partners.module';
 import { PromosModule } from './promos/promos.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { CartsModule } from './carts/carts.module';
@@ -69,6 +70,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     RedisModule,
     AuditModule,
     AuthModule,
+    PartnersModule,
     UsersModule,
     ProfilesModule,
     ConversationsModule,
